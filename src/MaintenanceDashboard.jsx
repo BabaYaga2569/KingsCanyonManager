@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { collection, getDocs, deleteDoc, doc, updateDoc, addDoc } from "firebase/firestore";
+import { collection, getDocs, deleteDoc, doc, updateDoc, addDoc, query, where } from "firebase/firestore";
 import { db } from "./firebase";
 import { generateSecureToken } from './utils/tokenUtils';
 import {
@@ -234,6 +234,7 @@ export default function MaintenanceDashboard() {
       const paymentRecord = {
         customerId: customerId,
         customerName: contract.customerName,
+        clientName: contract.customerName,
         amount: parseFloat(paymentData.amount),
         paymentMethod: paymentData.method,
         paymentDate: new Date().toISOString(),

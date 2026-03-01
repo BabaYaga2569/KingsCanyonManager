@@ -99,7 +99,7 @@ export default function PaymentsDashboard() {
 
       const matchesClient =
         !filters.searchClient ||
-        payment.clientName
+        (payment.clientName || payment.customerName || "")
           .toLowerCase()
           .includes(filters.searchClient.toLowerCase());
 
@@ -173,7 +173,7 @@ export default function PaymentsDashboard() {
       ...filtered.map((p) =>
         [
           p.paymentDate,
-          `"${p.clientName}"`,
+          `"${p.clientName || p.customerName || "Unknown"}"`,
           p.amount,
           getPaymentMethodLabel(p.paymentMethod),
           `"${p.reference || ""}"`,
@@ -483,7 +483,7 @@ export default function PaymentsDashboard() {
                     mb: 1,
                   }}
                 >
-                  <Typography variant="h6">{payment.clientName}</Typography>
+                  <Typography variant="h6">{payment.clientName || payment.customerName || "Unknown"}</Typography>
                   <Typography variant="h6" color="success.main">
                     ${parseFloat(payment.amount).toFixed(2)}
                   </Typography>
@@ -564,7 +564,7 @@ export default function PaymentsDashboard() {
                     <TableCell>
                       {moment(payment.paymentDate).format("MMM DD, YYYY")}
                     </TableCell>
-                    <TableCell>{payment.clientName}</TableCell>
+                    <TableCell>{payment.clientName || payment.customerName || "Unknown"}</TableCell>
                     <TableCell align="right">
                       <Typography
                         variant="body1"
