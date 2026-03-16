@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { useParams } from "react-router-dom";
 import { doc, getDoc, updateDoc } from "firebase/firestore";
 import { db } from "./firebase";
+import { getFunctions, httpsCallable } from "firebase/functions";
 import { getTokenFromUrl } from './utils/tokenUtils';
 import {
   Container,
@@ -21,8 +22,6 @@ import {
 import SignatureCanvas from "react-signature-canvas";
 import CheckCircleIcon from "@mui/icons-material/CheckCircle";
 import Swal from "sweetalert2";
-import { notifyContractSigned } from "./pushoverNotificationService";
-import { emailContractSigned } from "./emailNotificationService";
 
 // Create a simple theme for public pages
 const publicTheme = createTheme({
@@ -78,9 +77,8 @@ function ContractSigningPageContent() {
 
       const data = snap.data();
       
-            // Verify token matches if contract has one
-      // Skip check if contract has no token (legacy contracts)
-      if (data.signingToken && token && data.signingToken !== token) {
+      // Verify token matches (Firestore rules will also check this)
+      if (data.signingToken && data.signingToken !== token) {
         Swal.fire("Access Denied", "Invalid or expired link. Please request a new signing link.", "error");
         setLoading(false);
         return;
@@ -134,25 +132,22 @@ function ContractSigningPageContent() {
         lastUpdated: timestamp,
       });
 
-      // Send notification email (placeholder - will be implemented with Cloud Function)
       console.log("Contract signed by client:", contractId);
 
-      // Send Pushover alert to admin
+      // Phase 3: Notify admins via text
       try {
-        await notifyContractSigned(
-          contract.clientName || "Customer",
-          contract.amount || 0
-        );
-      } catch (e) { console.error("Pushover error:", e); }
-
-      // Send confirmation email to customer
-      try {
-        await emailContractSigned(
-          contract.clientEmail || contract.email || null,
-          contract.clientName || "Valued Customer",
-          contract.amount || 0
-        );
-      } catch (e) { console.error("EmailJS error:", e); }
+        const functions = getFunctions();
+        const notifySignature = httpsCallable(functions, 'notifySignature');
+        await notifySignature({
+          docType: 'contract',
+          docId: contractId,
+          customerName: contract.clientName,
+          amount: contract.amount,
+        });
+        console.log("Admin notification sent for contract signing");
+      } catch (notifyError) {
+        console.error("Admin notification failed (non-blocking):", notifyError);
+      }
 
       Swal.fire({
         icon: "success",
@@ -220,146 +215,110 @@ function ContractSigningPageContent() {
     );
   }
 
-  if (alreadySigned) {
-    return (
-      <Container maxWidth="md" sx={{ mt: 4, mb: 6 }}>
-        <Paper sx={{ p: 4, textAlign: "center" }}>
-          <CheckCircleIcon sx={{ fontSize: 80, color: "success.main", mb: 2 }} />
-          <Typography variant="h4" gutterBottom>
-            Contract Already Signed!
-          </Typography>
-          <Typography variant="body1" color="text.secondary" sx={{ mb: 3 }}>
-            You signed this contract on {new Date(contract.clientSignedAt).toLocaleString()}
-          </Typography>
-          <Divider sx={{ my: 3 }} />
-          <Typography variant="h6" gutterBottom>
-            Next Steps:
-          </Typography>
-          <Typography variant="body1" sx={{ mb: 2 }}>
-            • Check your email for the payment link<br />
-            • Deposit amount: <strong>${(contract.depositAmount || contract.amount * 0.5).toFixed(2)}</strong><br />
-            • We'll start work once payment is received
-          </Typography>
-          <Typography variant="body2" color="text.secondary">
-            Questions? Call us at {COMPANY.phone}
-          </Typography>
-        </Paper>
-      </Container>
-    );
-  }
-
-  const depositAmount = contract.depositAmount || (contract.amount * 0.5);
-  const finalAmount = contract.amount - depositAmount;
-
   return (
-    <Container maxWidth="md" sx={{ mt: 4, mb: 6 }}>
-      <Paper sx={{ p: { xs: 2, sm: 4 } }}>
-        {/* Header */}
-        <Box sx={{ textAlign: "center", mb: 4 }}>
-          <img 
-            src={COMPANY.logoPath} 
-            alt="Kings Canyon Landscaping" 
-            style={{ height: 80, marginBottom: 16 }}
-            onError={(e) => { e.target.style.display = 'none' }}
-          />
-          <Typography variant="h4" gutterBottom>
-            Service Contract
+    <Container maxWidth="sm" sx={{ py: 4 }}>
+      {/* Company Header */}
+      <Box sx={{ textAlign: "center", mb: 4 }}>
+        <img 
+          src={COMPANY.logoPath} 
+          alt="Kings Canyon Landscaping" 
+          style={{ width: 80, height: 80, marginBottom: 8 }}
+          onError={(e) => { e.target.style.display = 'none'; }}
+        />
+        <Typography variant="h5" fontWeight="bold">
+          {COMPANY.name}
+        </Typography>
+        <Typography variant="body2" color="text.secondary">
+          {COMPANY.phone} | {COMPANY.email}
+        </Typography>
+      </Box>
+
+      {/* Already Signed State */}
+      {alreadySigned && (
+        <Alert 
+          severity="success" 
+          icon={<CheckCircleIcon fontSize="large" />}
+          sx={{ mb: 3, py: 2 }}
+        >
+          <Typography variant="h6">Contract Already Signed</Typography>
+          <Typography>
+            This contract was signed on {contract.clientSignedAt ? new Date(contract.clientSignedAt).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }) : 'a previous date'}.
+            You're all set — no further action needed.
           </Typography>
-          <Typography variant="h5" color="primary">
-            {COMPANY.name}
-          </Typography>
-          <Typography variant="body2" color="text.secondary">
-            {COMPANY.phone} • {COMPANY.email}
+        </Alert>
+      )}
+
+      {/* Contract Details */}
+      <Paper elevation={2} sx={{ p: 3, mb: 3 }}>
+        <Typography variant="h6" gutterBottom>
+          Service Contract
+        </Typography>
+        
+        <Divider sx={{ mb: 2 }} />
+
+        <Box sx={{ mb: 2 }}>
+          <Typography variant="body2" color="text.secondary">Client</Typography>
+          <Typography variant="body1" fontWeight="bold">{contract.clientName}</Typography>
+        </Box>
+
+        <Box sx={{ mb: 2 }}>
+          <Typography variant="body2" color="text.secondary">Amount</Typography>
+          <Typography variant="h5" color="primary" fontWeight="bold">
+            ${(contract.amount || 0).toFixed(2)}
           </Typography>
         </Box>
 
-        <Divider sx={{ my: 3 }} />
+        <Box sx={{ mb: 2 }}>
+          <Typography variant="body2" color="text.secondary">Scope of Work</Typography>
+          <Typography variant="body1">{contract.description || "See attached PDF"}</Typography>
+        </Box>
 
-        {/* Contract Details */}
-        <Box sx={{ mb: 4 }}>
-          <Typography variant="h6" gutterBottom>
-            Contract Details
-          </Typography>
-          <Box sx={{ pl: 2 }}>
-            <Typography variant="body1" sx={{ mb: 1 }}>
-              <strong>Client:</strong> {contract.clientName}
-            </Typography>
-            <Typography variant="body1" sx={{ mb: 1 }}>
-              <strong>Total Amount:</strong> ${contract.amount?.toFixed(2)}
-            </Typography>
-            <Typography variant="body1" sx={{ mb: 1 }}>
-              <strong>Deposit (50%):</strong> ${depositAmount.toFixed(2)}
-            </Typography>
-            <Typography variant="body1" sx={{ mb: 1 }}>
-              <strong>Balance Due Upon Completion:</strong> ${finalAmount.toFixed(2)}
-            </Typography>
-            <Typography variant="body1" sx={{ mb: 2 }}>
-              <strong>Date:</strong> {new Date().toLocaleDateString()}
-            </Typography>
-            
-            {contract.description && (
-              <Box sx={{ mt: 2 }}>
-                <Typography variant="subtitle2" gutterBottom>
-                  <strong>Scope of Work:</strong>
-                </Typography>
-                <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", pl: 2 }}>
-                  {contract.description}
-                </Typography>
-              </Box>
-            )}
+        {contract.materials && (
+          <Box sx={{ mb: 2 }}>
+            <Typography variant="body2" color="text.secondary">Materials</Typography>
+            <Typography variant="body1">{contract.materials}</Typography>
           </Box>
-        </Box>
+        )}
 
-        <Divider sx={{ my: 3 }} />
+        <Divider sx={{ my: 2 }} />
 
-        {/* Terms & Conditions */}
-        <Box sx={{ mb: 4 }}>
+        {/* Terms */}
+        <Typography variant="subtitle2" gutterBottom>Terms & Conditions</Typography>
+        <Typography variant="body2" color="text.secondary" paragraph>
+          Payment is due upon substantial completion of the project. Invoices are due within 14 days. 
+          A late payment fee of 5% may be applied to balances over 15 days past due.
+        </Typography>
+        <Typography variant="body2" color="text.secondary" paragraph>
+          All workmanship is warranted for 30 days from completion against defects in installation. 
+          Client may cancel before work begins; if materials have been ordered, a restocking fee may apply.
+        </Typography>
+      </Paper>
+
+      {/* Signature Section */}
+      {!alreadySigned && (
+        <Paper elevation={2} sx={{ p: 3, mb: 3 }}>
           <Typography variant="h6" gutterBottom>
-            Terms & Conditions
-          </Typography>
-          <Box sx={{ pl: 2 }}>
-            <Typography variant="body2" paragraph>
-              <strong>Payment Terms:</strong> A deposit of 50% is required to begin work. The remaining balance is due upon substantial completion of the project. Payment is accepted via Zelle, cash, or check.
-            </Typography>
-            <Typography variant="body2" paragraph>
-              <strong>Scope of Work:</strong> Work to be performed is described above. Any changes or additions requested by the client that are not listed will be treated as a change order and may affect price and timeline.
-            </Typography>
-            <Typography variant="body2" paragraph>
-              <strong>Warranty:</strong> All workmanship is warranted for 30 days from completion against defects in installation. Materials are covered by their manufacturer warranties where applicable.
-            </Typography>
-            <Typography variant="body2" paragraph>
-              <strong>Cancellation:</strong> Client may cancel before work begins. If materials have been ordered, a restocking fee of up to 20% may apply. If work has begun, client will be responsible for labor and materials incurred to date.
-            </Typography>
-          </Box>
-        </Box>
-
-        <Divider sx={{ my: 3 }} />
-
-        {/* Signature Section */}
-        <Box sx={{ mb: 4 }}>
-          <Typography variant="h6" gutterBottom>
-            Client Signature
+            Sign This Contract
           </Typography>
           <Alert severity="info" sx={{ mb: 2 }}>
-            By signing below, you agree to the terms and conditions of this contract.
+            By signing below, you agree to the terms of this service contract.
           </Alert>
           
-          <Paper 
-            variant="outlined" 
-            sx={{ 
-              p: 2, 
-              mb: 2,
-              border: "2px solid",
-              borderColor: "primary.main",
-            }}
-          >
-            <Typography variant="subtitle2" gutterBottom>
+          <Box sx={{ 
+            border: "2px solid",
+            borderColor: "primary.main",
+            borderRadius: 1,
+            p: 1,
+            mb: 2,
+            backgroundColor: "white",
+          }}>
+            <Typography variant="subtitle2" gutterBottom sx={{ px: 1 }}>
               Sign with your finger or mouse:
             </Typography>
             <Box sx={{ 
               border: "1px solid #ccc", 
               borderRadius: 1,
-              backgroundColor: "white",
+              backgroundColor: "#fafafa",
               touchAction: "none",
             }}>
               <SignatureCanvas
@@ -382,7 +341,7 @@ function ContractSigningPageContent() {
             >
               Clear Signature
             </Button>
-          </Paper>
+          </Box>
 
           <FormControlLabel
             control={
@@ -394,32 +353,26 @@ function ContractSigningPageContent() {
             }
             label={
               <Typography variant="body2">
-                I have read and agree to the terms and conditions of this contract
+                I agree to the terms and conditions of this service contract
               </Typography>
             }
           />
-        </Box>
 
-        {/* Sign Button */}
-        <Box sx={{ textAlign: "center" }}>
           <Button
             variant="contained"
             size="large"
+            fullWidth
             onClick={handleSign}
             disabled={signing || !agreed}
-            sx={{ 
-              minWidth: 200,
-              py: 1.5,
-              fontSize: "1.1rem",
-            }}
+            sx={{ mt: 2, py: 1.5, fontSize: "1.1rem" }}
           >
             {signing ? "Signing..." : "Sign Contract"}
           </Button>
-          <Typography variant="caption" display="block" sx={{ mt: 2, color: "text.secondary" }}>
+          <Typography variant="caption" display="block" sx={{ mt: 2, color: "text.secondary", textAlign: "center" }}>
             Your signature will be securely stored and a copy will be sent to your email
           </Typography>
-        </Box>
-      </Paper>
+        </Paper>
+      )}
 
       {/* Footer */}
       <Box sx={{ textAlign: "center", mt: 4 }}>

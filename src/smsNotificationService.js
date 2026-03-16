@@ -1,79 +1,42 @@
 // smsNotificationService.js
-// SMS Notification Service using Twilio (Direct API)
-// Sends ADMIN notifications when employees clock in/out
+// SMS Notification Service using Email-to-SMS via Firebase Cloud Function
+// Sends ADMIN notifications when employees clock in/out, etc.
 
 import { collection, addDoc, getDocs, query, orderBy, limit } from 'firebase/firestore';
 import { db } from './firebase';
+import { getFunctions, httpsCallable } from 'firebase/functions';
+
+const functions = getFunctions();
 
 /**
- * Send SMS notification via Twilio API (Direct)
+ * Call the Cloud Function to send notification to all admins
  */
-export async function sendSMS(to, message, type, metadata = {}) {
+async function sendNotification(message, type, metadata = {}) {
   try {
-    console.log(`📱 Sending SMS to ${to}`);
+    console.log(`📱 Sending notification: ${type}`);
     
-    // Get Twilio credentials from settings
-    const settings = await getNotificationSettings();
+    const sendNotificationFn = httpsCallable(functions, 'sendNotification');
+    const result = await sendNotificationFn({ message, type, metadata });
     
-    if (!settings?.twilioConfigured) {
-      throw new Error('Twilio not configured');
-    }
-    
-    const { twilioAccountSid, twilioAuthToken, twilioPhoneNumber } = settings;
-    
-    // Twilio API endpoint
-    const url = `https://api.twilio.com/2010-04-01/Accounts/${twilioAccountSid}/Messages.json`;
-    
-    // Create form data
-    const formData = new URLSearchParams();
-    formData.append('To', to);
-    formData.append('From', twilioPhoneNumber);
-    formData.append('Body', message);
-    
-    // Make request to Twilio
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Authorization': 'Basic ' + btoa(`${twilioAccountSid}:${twilioAuthToken}`)
-      },
-      body: formData
-    });
-    
-    if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(`Twilio error: ${errorData.message || response.statusText}`);
-    }
-    
-    const result = await response.json();
-    
-    // Log success
-    await logNotification({
-      to,
-      message,
-      type,
-      status: 'sent',
-      sentAt: new Date().toISOString(),
-      metadata,
-      twilioSid: result.sid
-    });
-    
-    console.log('✅ SMS sent:', result.sid);
-    return { success: true, sid: result.sid };
+    console.log('✅ Notification sent:', result.data);
+    return { success: true, ...result.data };
     
   } catch (error) {
-    console.error('❌ SMS error:', error);
+    console.error('❌ Notification error:', error);
     
-    // Log failure
-    await logNotification({
-      to,
-      message,
-      type,
-      status: 'failed',
-      sentAt: new Date().toISOString(),
-      metadata,
-      error: error.message
-    });
+    // Log failure locally
+    try {
+      await addDoc(collection(db, 'notifications_log'), {
+        message,
+        type,
+        status: 'failed',
+        sentAt: new Date().toISOString(),
+        error: error.message,
+        metadata,
+      });
+    } catch (logErr) {
+      console.error('Error logging notification:', logErr);
+    }
     
     return { success: false, error: error.message };
   }
@@ -98,17 +61,19 @@ export async function getNotificationSettings() {
     const snap = await getDocs(collection(db, 'notification_settings'));
     if (snap.empty) {
       return {
-        paymentReminders: { enabled: false, daysBefore: 3, phoneNumbers: [] },
-        jobReminders: { enabled: false, daysBefore: 1, phoneNumbers: [] },
+        paymentReminders: { enabled: false, daysBefore: 3 },
+        jobReminders: { enabled: false, daysBefore: 1 },
         clockAlerts: {
           enabled: false,
           trackAllEmployees: true,
           trackedEmployeeIds: [],
-          phoneNumbers: [],
           quietHoursStart: '22:00',
           quietHoursEnd: '06:00'
         },
-        twilioConfigured: false
+        adminPhones: [],
+        gmailEmail: '',
+        gmailAppPassword: '',
+        gmailConfigured: false
       };
     }
     
@@ -132,8 +97,13 @@ export async function sendClockInNotification(employee, timestamp, job = null) {
       return { success: false, reason: 'disabled' };
     }
     
-    if (!settings?.clockAlerts?.phoneNumbers?.length) {
-      console.log('⚠️ No admin phone numbers');
+    if (!settings?.gmailConfigured) {
+      console.log('⚠️ Gmail not configured');
+      return { success: false, reason: 'not_configured' };
+    }
+    
+    if (!settings?.adminPhones?.length) {
+      console.log('⚠️ No admin phones');
       return { success: false, reason: 'no_recipients' };
     }
     
@@ -157,25 +127,18 @@ export async function sendClockInNotification(employee, timestamp, job = null) {
       hour12: true
     });
     
-    let message = `⏰ CLOCK IN\n${employee.name} - ${time}`;
+    let message = `CLOCK IN\n${employee.name} - ${time}`;
     
     if (job) {
       message += `\nJob: ${job.clientName || job.name || 'Unknown'}`;
     }
     
-    // Send to all admins
-    const results = [];
-    for (const phoneNumber of settings.clockAlerts.phoneNumbers) {
-      const result = await sendSMS(phoneNumber, message, 'clock_in', {
-        employeeId: employee.id,
-        employeeName: employee.name,
-        timestamp,
-        jobId: job?.id
-      });
-      results.push(result);
-    }
-    
-    return { success: true, results };
+    return await sendNotification(message, 'clock_in', {
+      employeeId: employee.id,
+      employeeName: employee.name,
+      timestamp,
+      jobId: job?.id
+    });
     
   } catch (error) {
     console.error('❌ Clock in error:', error);
@@ -195,8 +158,13 @@ export async function sendClockOutNotification(employee, clockInTime, clockOutTi
       return { success: false, reason: 'disabled' };
     }
     
-    if (!settings?.clockAlerts?.phoneNumbers?.length) {
-      console.log('⚠️ No admin phone numbers');
+    if (!settings?.gmailConfigured) {
+      console.log('⚠️ Gmail not configured');
+      return { success: false, reason: 'not_configured' };
+    }
+    
+    if (!settings?.adminPhones?.length) {
+      console.log('⚠️ No admin phones');
       return { success: false, reason: 'no_recipients' };
     }
     
@@ -222,27 +190,20 @@ export async function sendClockOutNotification(employee, clockInTime, clockOutTi
     
     const duration = calculateDuration(clockInTime, clockOutTime);
     
-    let message = `🏁 CLOCK OUT\n${employee.name} - ${time}\nDuration: ${duration}`;
+    let message = `CLOCK OUT\n${employee.name} - ${time}\nWorked: ${duration}`;
     
     if (job) {
       message += `\nJob: ${job.clientName || job.name || 'Unknown'}`;
     }
     
-    // Send to all admins
-    const results = [];
-    for (const phoneNumber of settings.clockAlerts.phoneNumbers) {
-      const result = await sendSMS(phoneNumber, message, 'clock_out', {
-        employeeId: employee.id,
-        employeeName: employee.name,
-        clockInTime,
-        clockOutTime,
-        duration,
-        jobId: job?.id
-      });
-      results.push(result);
-    }
-    
-    return { success: true, results };
+    return await sendNotification(message, 'clock_out', {
+      employeeId: employee.id,
+      employeeName: employee.name,
+      clockInTime,
+      clockOutTime,
+      duration,
+      jobId: job?.id
+    });
     
   } catch (error) {
     console.error('❌ Clock out error:', error);
@@ -265,7 +226,6 @@ function isQuietHours(clockAlertSettings) {
   const quietStart = startHour * 60 + startMinute;
   const quietEnd = endHour * 60 + endMinute;
   
-  // Handle quiet hours that span midnight
   if (quietStart > quietEnd) {
     return currentTime >= quietStart || currentTime < quietEnd;
   } else {
@@ -284,13 +244,9 @@ function calculateDuration(startTime, endTime) {
   const hours = Math.floor(diffMs / (1000 * 60 * 60));
   const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
   
-  if (hours === 0) {
-    return `${minutes}m`;
-  } else if (minutes === 0) {
-    return `${hours}h`;
-  } else {
-    return `${hours}h ${minutes}m`;
-  }
+  if (hours === 0) return `${minutes}m`;
+  if (minutes === 0) return `${hours}h`;
+  return `${hours}h ${minutes}m`;
 }
 
 /**
@@ -313,10 +269,15 @@ export async function getNotificationHistory(limit_count = 50) {
 }
 
 /**
- * Test SMS notification
+ * Test notification - sends test to all admins via Cloud Function
  */
-export async function sendTestNotification(phoneNumber) {
-  const message = `✅ TEST\n\nKCL Manager test notification working!\n\n${new Date().toLocaleString()}`;
-  
-  return await sendSMS(phoneNumber, message, 'test', { test: true });
+export async function sendTestNotification() {
+  try {
+    const sendTestFn = httpsCallable(functions, 'sendTestNotification');
+    const result = await sendTestFn({});
+    return { success: true, ...result.data };
+  } catch (error) {
+    console.error('Test notification error:', error);
+    return { success: false, error: error.message };
+  }
 }

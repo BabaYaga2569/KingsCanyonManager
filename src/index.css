@@ -12,3 +12,7 @@ body {
 .MuiTab-root.Mui-selected {
   color: #1976d2;
 }
+/* Force SweetAlert2 above MUI Dialogs */
+.swal2-container {
+  z-index: 99999 !important;
+}

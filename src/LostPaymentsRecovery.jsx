@@ -62,6 +62,7 @@ function LostPaymentsRecovery() {
       const customer = customers.find(c => c.id === newPayment.customerId);
       
       const paymentData = {
+        customerId: newPayment.customerId,
         clientName: customer.name,
         amount: parseFloat(newPayment.amount),
         paymentMethod: newPayment.paymentMethod,

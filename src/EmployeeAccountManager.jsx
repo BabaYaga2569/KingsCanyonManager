@@ -1,33 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import {
-  Box,
-  Button,
-  Card,
-  CardContent,
-  Container,
-  Dialog,
-  DialogActions,
-  DialogContent,
-  DialogTitle,
-  FormControl,
-  Grid,
-  IconButton,
-  InputLabel,
-  MenuItem,
-  Paper,
-  Select,
-  Table,
-  TableBody,
-  TableCell,
-  TableContainer,
-  TableHead,
-  TableRow,
-  TextField,
-  Typography,
-  Chip,
-  Alert,
-  CircularProgress,
-  ButtonGroup, // ✅ NEW: For filter buttons
+  Box, Button, Card, CardContent, Container, Dialog, DialogActions,
+  DialogContent, DialogTitle, FormControl, Grid, IconButton, InputLabel,
+  MenuItem, Paper, Select, Table, TableBody, TableCell, TableContainer,
+  TableHead, TableRow, TextField, Typography, Chip, Alert, CircularProgress,
+  ButtonGroup, Switch, FormControlLabel, InputAdornment, Tabs, Tab, Divider,
 } from '@mui/material';
 import {
   Add as AddIcon,
@@ -37,65 +14,137 @@ import {
   Lock as LockIcon,
   LockOpen as LockOpenIcon,
   CheckCircle as CheckCircleIcon,
-  Pending as PendingIcon
+  Pending as PendingIcon,
+  Send as SendIcon,
+  Email as EmailIcon,
+  Work as WorkIcon,
 } from '@mui/icons-material';
 import { db, auth } from './firebase';
-import { 
-  collection, 
-  getDocs, 
-  doc, 
-  setDoc, 
-  updateDoc,
-  deleteDoc,
-  getDoc,
-  query, // ✅ NEW: For querying orphaned data
-  where // ✅ NEW: For filtering by email
+import {
+  collection, getDocs, doc, setDoc, updateDoc, deleteDoc,
+  query, where,
 } from 'firebase/firestore';
-import { 
+import {
   createUserWithEmailAndPassword,
-  updatePassword,
-  deleteUser,
-  signInWithEmailAndPassword
+  signInWithEmailAndPassword,
 } from 'firebase/auth';
+import { getFunctions, httpsCallable } from 'firebase/functions';
 import Swal from 'sweetalert2';
 import generateEmployeeNDAPDF from './pdf/generateEmployeeNDAPDF';
 
+const functions = getFunctions();
+const sendEmployeeInviteFn = httpsCallable(functions, 'sendEmployeeInvite');
+
+// ── Helper: calculate salary per pay period ──────────────────────────────────
+function calcPerPeriod(annualSalary, paySchedule) {
+  const s = parseFloat(annualSalary) || 0;
+  return paySchedule === 'biweekly' ? (s / 26).toFixed(2) : (s / 24).toFixed(2);
+}
+
+// ── EmploymentFields must be defined OUTSIDE EmployeeAccountManager
+// so React doesn't remount it on every keystroke (which kills input focus)
+const EmploymentFields = ({ form, setForm }) => (
+  <>
+    <Grid item xs={12} sm={6}>
+      <TextField select fullWidth label="Employment Type"
+        value={form.employmentType || 'hourly'}
+        onChange={e => setForm({ ...form, employmentType: e.target.value })}>
+        <MenuItem value="hourly">Hourly (tracks time, clocks in)</MenuItem>
+        <MenuItem value="salary">Salary (fixed pay, no clock-in required)</MenuItem>
+      </TextField>
+    </Grid>
+
+    {(form.employmentType || 'hourly') === 'hourly' && (
+      <Grid item xs={12} sm={6}>
+        <TextField fullWidth label="Hourly Rate *" type="number"
+          value={form.hourlyRate || ''}
+          onChange={e => setForm({ ...form, hourlyRate: e.target.value })}
+          InputProps={{ startAdornment: <InputAdornment position="start">$</InputAdornment> }} />
+      </Grid>
+    )}
+
+    {(form.employmentType || 'hourly') === 'salary' && (
+      <>
+        <Grid item xs={12} sm={6}>
+          <TextField fullWidth label="Annual Salary *" type="number"
+            value={form.annualSalary || ''}
+            onChange={e => setForm({ ...form, annualSalary: e.target.value })}
+            InputProps={{ startAdornment: <InputAdornment position="start">$</InputAdornment> }}
+            helperText={form.annualSalary
+              ? `$${calcPerPeriod(form.annualSalary, form.paySchedule)} per pay period`
+              : ''} />
+        </Grid>
+        <Grid item xs={12} sm={6}>
+          <TextField select fullWidth label="Pay Schedule"
+            value={form.paySchedule || 'semi-monthly'}
+            onChange={e => setForm({ ...form, paySchedule: e.target.value })}>
+            <MenuItem value="semi-monthly">Semi-Monthly (15th &amp; 30th — 24/yr)</MenuItem>
+            <MenuItem value="biweekly">Bi-Weekly (every 2 weeks — 26/yr)</MenuItem>
+          </TextField>
+        </Grid>
+      </>
+    )}
+
+    {(form.employmentType || 'hourly') === 'hourly' && (
+      <Grid item xs={12}>
+        <FormControlLabel
+          control={
+            <Switch checked={form.requireGps !== false}
+              onChange={e => setForm({ ...form, requireGps: e.target.checked })} color="primary" />
+          }
+          label={
+            <Box>
+              <Typography variant="body2" fontWeight="bold">Require GPS Clock-In</Typography>
+              <Typography variant="caption" color="text.secondary">
+                {form.requireGps !== false
+                  ? 'Must be within 500ft of job site to clock in'
+                  : 'GPS not required (for office/admin staff)'}
+              </Typography>
+            </Box>
+          }
+        />
+      </Grid>
+    )}
+  </>
+);
+
 const EmployeeAccountManager = ({ currentUser, currentUserRole }) => {
-  const [employees, setEmployees] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [openDialog, setOpenDialog] = useState(false);
-  const [editMode, setEditMode] = useState(false);
+  const [employees, setEmployees]       = useState([]);
+  const [loading, setLoading]           = useState(true);
+  const [filter, setFilter]             = useState('active');
+  const [activeTab, setActiveTab]       = useState(0); // 0=employees, 1=pending invites
+
+  // ── Old-style Add/Edit dialog ─────────────────────────────────────────────
+  const [openDialog, setOpenDialog]         = useState(false);
+  const [editMode, setEditMode]             = useState(false);
   const [selectedEmployee, setSelectedEmployee] = useState(null);
-  
-  // NDA Viewer State
-  const [ndaViewerOpen, setNdaViewerOpen] = useState(false);
-  const [viewingNDA, setViewingNDA] = useState(null);
-  const [generatingPDF, setGeneratingPDF] = useState(false);
-  
-  // Logo for PDF
-  const [logoDataUrl, setLogoDataUrl] = useState(null);
-  
-  // ✅ NEW: Filter state
-  const [filter, setFilter] = useState('active'); // Show active by default
-  
-  // Form state
   const [formData, setFormData] = useState({
-    name: '',
-    email: '',
-    password: '',
-    role: 'crew',
-    jobTitle: 'Crew Member',
-    phoneNumber: '',
-    hourlyRate: ''
+    name: '', email: '', password: '', role: 'crew',
+    jobTitle: 'Crew Member', phoneNumber: '', hourlyRate: '',
+    employmentType: 'hourly', annualSalary: '', paySchedule: 'semi-monthly',
+    requireGps: true,
   });
 
-  useEffect(() => {
-    if (currentUserRole === 'god') {
-      loadEmployees();
-    }
-  }, [currentUserRole]);
+  // ── Invite dialog ─────────────────────────────────────────────────────────
+  const [inviteOpen, setInviteOpen]     = useState(false);
+  const [inviteLoading, setInviteLoading] = useState(false);
+  const [inviteForm, setInviteForm] = useState({
+    name: '', email: '', role: 'crew', jobTitle: 'Crew Member',
+    phoneNumber: '', employmentType: 'hourly', hourlyRate: '',
+    annualSalary: '', paySchedule: 'semi-monthly', requireGps: true,
+  });
 
-  // Load logo for PDF generation
+  // ── NDA Viewer ────────────────────────────────────────────────────────────
+  const [ndaViewerOpen, setNdaViewerOpen] = useState(false);
+  const [viewingNDA, setViewingNDA]       = useState(null);
+  const [generatingPDF, setGeneratingPDF] = useState(false);
+  const [logoDataUrl, setLogoDataUrl]     = useState(null);
+
+  // ── Load pending invites (not yet accepted) ───────────────────────────────
+  const [pendingInvites, setPendingInvites] = useState([]);
+  const [invitesLoading, setInvitesLoading] = useState(false);
+
+  // ── Load logo for PDF ─────────────────────────────────────────────────────
   useEffect(() => {
     const img = new Image();
     img.crossOrigin = 'anonymous';
@@ -104,48 +153,164 @@ const EmployeeAccountManager = ({ currentUser, currentUserRole }) => {
         const canvas = document.createElement('canvas');
         canvas.width = img.width;
         canvas.height = img.height;
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(img, 0, 0);
+        canvas.getContext('2d').drawImage(img, 0, 0);
         setLogoDataUrl(canvas.toDataURL('image/png'));
-      } catch (e) {
-        console.warn('Logo loading failed:', e);
-        setLogoDataUrl(null);
-      }
+      } catch (e) { setLogoDataUrl(null); }
     };
     img.src = '/logo-kcl.png';
   }, []);
 
-  // Only allow 'god' role to access this page
+  useEffect(() => {
+    if (currentUserRole === 'god') {
+      loadEmployees();
+      loadPendingInvites();
+    }
+  }, [currentUserRole]);
+
+  // ── God-only guard ────────────────────────────────────────────────────────
   if (currentUserRole !== 'god') {
     return (
       <Container maxWidth="lg" sx={{ mt: 4 }}>
         <Alert severity="error">
-          Access Denied: Only administrators can manage employee accounts.
+          Access Denied: Only the owner can manage employee accounts.
         </Alert>
       </Container>
     );
   }
 
+  // ── Load employees ────────────────────────────────────────────────────────
   const loadEmployees = async () => {
     try {
       setLoading(true);
-      const usersRef = collection(db, 'users');
-      const snapshot = await getDocs(usersRef);
-      
-      const employeeList = [];
-      snapshot.forEach((doc) => {
-        employeeList.push({ id: doc.id, ...doc.data() });
-      });
-      
-      setEmployees(employeeList);
-    } catch (error) {
-      console.error('Error loading employees:', error);
-      Swal.fire('Error', 'Failed to load employees: ' + error.message, 'error');
+      const snap = await getDocs(collection(db, 'users'));
+      setEmployees(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    } catch (err) {
+      Swal.fire('Error', 'Failed to load employees: ' + err.message, 'error');
     } finally {
       setLoading(false);
     }
   };
 
+  // ── Load pending invites (not yet accepted) ───────────────────────────────
+  const loadPendingInvites = async () => {
+    try {
+      setInvitesLoading(true);
+      const snap = await getDocs(collection(db, 'invites'));
+      const all = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      // Only show unused, non-expired invites
+      const pending = all.filter(inv => !inv.used);
+      pending.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+      setPendingInvites(pending);
+    } catch (err) {
+      console.error('Error loading invites:', err);
+    } finally {
+      setInvitesLoading(false);
+    }
+  };
+
+  const handleCancelInvite = async (invite) => {
+    const result = await Swal.fire({
+      title: 'Cancel Invite?',
+      html: `Cancel the pending invite for <strong>${invite.name}</strong> (${invite.email})?<br/>They will not be able to use this link.`,
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonText: 'Cancel Invite',
+      confirmButtonColor: '#d33',
+      cancelButtonText: 'Keep It',
+    });
+    if (!result.isConfirmed) return;
+    try {
+      await updateDoc(doc(db, 'invites', invite.id), {
+        used: true,
+        cancelledAt: new Date().toISOString(),
+        cancelledBy: currentUser.uid,
+      });
+      Swal.fire({ icon: 'success', title: 'Invite Cancelled', timer: 1500, showConfirmButton: false });
+      loadPendingInvites();
+    } catch (err) {
+      Swal.fire('Error', 'Failed to cancel invite: ' + err.message, 'error');
+    }
+  };
+
+  // ════════════════════════════════════════════════════════════════════════════
+  // INVITE FLOW (new preferred method)
+  // ════════════════════════════════════════════════════════════════════════════
+  const openInvite = () => {
+    setInviteForm({
+      name: '', email: '', role: 'crew', jobTitle: 'Crew Member',
+      phoneNumber: '', employmentType: 'hourly', hourlyRate: '',
+      annualSalary: '', paySchedule: 'semi-monthly', requireGps: true,
+    });
+    setInviteOpen(true);
+  };
+
+  const handleSendInvite = async () => {
+    const { name, email, employmentType, hourlyRate, annualSalary } = inviteForm;
+    if (!name.trim() || !email.trim()) {
+      Swal.fire('Missing Fields', 'Name and email are required.', 'warning'); return;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+      Swal.fire('Invalid Email', 'Please enter a valid email address.', 'warning'); return;
+    }
+    if (employmentType === 'hourly' && (!hourlyRate || parseFloat(hourlyRate) <= 0)) {
+      Swal.fire('Missing Pay Rate', 'Please enter an hourly rate.', 'warning'); return;
+    }
+    if (employmentType === 'salary' && (!annualSalary || parseFloat(annualSalary) <= 0)) {
+      Swal.fire('Missing Salary', 'Please enter an annual salary.', 'warning'); return;
+    }
+    try {
+      setInviteLoading(true);
+      const result = await sendEmployeeInviteFn({
+        name: name.trim(),
+        email: email.trim().toLowerCase(),
+        role: inviteForm.role,
+        jobTitle: inviteForm.jobTitle,
+        phoneNumber: inviteForm.phoneNumber.trim(),
+        employmentType,
+        hourlyRate: employmentType === 'hourly' ? parseFloat(hourlyRate) : 0,
+        annualSalary: employmentType === 'salary' ? parseFloat(annualSalary) : 0,
+        paySchedule: inviteForm.paySchedule,
+        requireGps: inviteForm.requireGps,
+        invitedBy: currentUser.uid,
+      });
+      setInviteOpen(false);
+      loadPendingInvites();
+      Swal.fire({
+        icon: 'success',
+        title: 'Invite Sent!',
+        html: `
+          <p>An invitation email has been sent to <strong>${email.trim()}</strong></p>
+          <p style="color:#555;font-size:0.9em;">Link expires in 72 hours.<br/>
+          They will sign the NDA on first login.</p>
+        `,
+      });
+    } catch (err) {
+      Swal.fire('Error', 'Failed to send invite: ' + err.message, 'error');
+    } finally {
+      setInviteLoading(false);
+    }
+  };
+
+  const handleResendInvite = async (emp) => {
+    try {
+      await sendEmployeeInviteFn({
+        name: emp.name, email: emp.email, role: emp.role || 'crew',
+        jobTitle: emp.jobTitle || 'Crew Member', phoneNumber: emp.phoneNumber || '',
+        employmentType: emp.employmentType || 'hourly',
+        hourlyRate: emp.hourlyRate || 0, annualSalary: emp.annualSalary || 0,
+        paySchedule: emp.paySchedule || 'semi-monthly',
+        requireGps: emp.requireGps !== false,
+        invitedBy: currentUser.uid, resend: true,
+      });
+      Swal.fire({ icon: 'success', title: 'Invite Resent!', timer: 1500, showConfirmButton: false });
+    } catch (err) {
+      Swal.fire('Error', 'Failed to resend invite: ' + err.message, 'error');
+    }
+  };
+
+  // ════════════════════════════════════════════════════════════════════════════
+  // LEGACY CREATE FLOW (kept as fallback — manual password)
+  // ════════════════════════════════════════════════════════════════════════════
   const handleOpenDialog = (employee = null) => {
     if (employee) {
       setEditMode(true);
@@ -157,314 +322,183 @@ const EmployeeAccountManager = ({ currentUser, currentUserRole }) => {
         role: employee.role || 'crew',
         jobTitle: employee.jobTitle || 'Crew Member',
         phoneNumber: employee.phoneNumber || '',
-        hourlyRate: employee.hourlyRate || ''
+        hourlyRate: employee.hourlyRate || '',
+        employmentType: employee.employmentType || (employee.role === 'crew' ? 'hourly' : 'salary'),
+        annualSalary: employee.annualSalary || '',
+        paySchedule: employee.paySchedule || 'semi-monthly',
+        requireGps: employee.requireGps !== false,
       });
     } else {
       setEditMode(false);
       setSelectedEmployee(null);
       setFormData({
-        name: '',
-        email: '',
-        password: '',
-        role: 'crew',
-        jobTitle: 'Crew Member',
-        phoneNumber: '',
-        hourlyRate: ''
+        name: '', email: '', password: '', role: 'crew',
+        jobTitle: 'Crew Member', phoneNumber: '', hourlyRate: '',
+        employmentType: 'hourly', annualSalary: '', paySchedule: 'semi-monthly',
+        requireGps: true,
       });
     }
     setOpenDialog(true);
   };
 
   const handleCloseDialog = () => {
-    setOpenDialog(false);
-    setEditMode(false);
-    setSelectedEmployee(null);
-    setFormData({
-      name: '',
-      email: '',
-      password: '',
-      role: 'crew',
-      jobTitle: 'Crew Member',
-      phoneNumber: '',
-      hourlyRate: ''
-    });
+    setOpenDialog(false); setEditMode(false); setSelectedEmployee(null);
   };
 
   const handleInputChange = (e) => {
     const { name, value } = e.target;
-    setFormData(prev => ({
-      ...prev,
-      [name]: value
-    }));
+    setFormData(prev => ({ ...prev, [name]: value }));
   };
 
   const handleCreateEmployee = async () => {
+    if (!formData.name || !formData.email || !formData.password) {
+      Swal.fire('Error', 'Name, email, and password are required', 'error'); return;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email.trim())) {
+      Swal.fire('Error', 'Invalid email address', 'error'); return;
+    }
+    if (formData.password.length < 6) {
+      Swal.fire('Error', 'Password must be at least 6 characters', 'error'); return;
+    }
+
+    const employeeData = { ...formData, name: formData.name.trim(), email: formData.email.trim() };
+    const currentUserEmail = currentUser.email;
+    handleCloseDialog();
+
+    const { value: currentPassword } = await Swal.fire({
+      title: 'Confirm Your Password',
+      text: 'Enter YOUR password to create this account:',
+      input: 'password', inputPlaceholder: 'Your password',
+      showCancelButton: true, allowOutsideClick: false,
+      inputValidator: v => !v ? 'Password required' : null,
+    });
+    if (!currentPassword) { setFormData(employeeData); setOpenDialog(true); return; }
+
+    Swal.fire({ title: 'Creating Employee...', allowOutsideClick: false, didOpen: () => Swal.showLoading() });
+
     try {
-      // Validation
-      if (!formData.name || !formData.email || !formData.password) {
-        Swal.fire('Error', 'Please fill in all required fields: Name, Email, and Password', 'error');
-        return;
-      }
-
-      // Validate email format
-      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-      if (!emailRegex.test(formData.email.trim())) {
-        Swal.fire('Error', 'Please enter a valid email address (e.g., user@example.com)', 'error');
-        return;
-      }
-
-      if (formData.password.length < 6) {
-        Swal.fire('Error', 'Password must be at least 6 characters long', 'error');
-        return;
-      }
-
-      // CRITICAL FIX: Save form data and close dialog FIRST
-      const employeeData = { 
-        name: formData.name.trim(),
-        email: formData.email.trim(),
-        password: formData.password,
-        role: formData.role,
-        jobTitle: formData.jobTitle,
-        phoneNumber: formData.phoneNumber.trim(),
-        hourlyRate: formData.hourlyRate
-      };
-      const currentUserEmail = currentUser.email;
-      
-      console.log('Creating employee with data:', { ...employeeData, password: '***' });
-      
-      handleCloseDialog();
-
-      // Prompt for YOUR password with high z-index
-      const { value: currentPassword } = await Swal.fire({
-        title: 'Confirm Your Password',
-        text: 'To create an employee account, please enter YOUR password:',
-        input: 'password',
-        inputPlaceholder: 'Your password',
-        showCancelButton: true,
-        allowOutsideClick: false,
-        customClass: {
-          container: 'swal-high-zindex'
-        },
-        inputValidator: (value) => {
-          if (!value) {
-            return 'You need to enter your password!'
-          }
-        }
-      });
-
-      if (!currentPassword) {
-        // User cancelled - reopen dialog with saved data
-        setFormData(employeeData);
-        setOpenDialog(true);
-        return;
-      }
-
-      // Show loading
-      Swal.fire({
-        title: 'Creating Employee...',
-        text: 'Please wait',
-        allowOutsideClick: false,
-        didOpen: () => {
-          Swal.showLoading();
-        }
-      });
-
-      console.log('Step 1: Creating Firebase Auth account for:', employeeData.email);
-
-      // Step 1: Create Firebase Authentication account (this logs us in as the new user)
-      const userCredential = await createUserWithEmailAndPassword(
-        auth,
-        employeeData.email,
-        employeeData.password
-      );
-      
+      const userCredential = await createUserWithEmailAndPassword(auth, employeeData.email, employeeData.password);
       const newUserId = userCredential.user.uid;
-      console.log('Step 2: Auth account created with UID:', newUserId);
 
-      // CRITICAL FIX: Re-login as god IMMEDIATELY before creating Firestore doc
-      console.log('Step 3: Re-logging in as god:', currentUserEmail);
       await signInWithEmailAndPassword(auth, currentUserEmail, currentPassword);
-      console.log('Step 4: Successfully re-logged in as god');
+      await new Promise(r => setTimeout(r, 500));
 
-      // Wait a moment for auth state to stabilize
-      await new Promise(resolve => setTimeout(resolve, 500));
-
-      // Step 2: NOW create Firestore user document (while logged in as god)
-      console.log('Step 5: Creating Firestore document for new employee');
       await setDoc(doc(db, 'users', newUserId), {
         name: employeeData.name,
         email: employeeData.email,
         role: employeeData.role,
         jobTitle: employeeData.jobTitle,
         phoneNumber: employeeData.phoneNumber || '',
-        hourlyRate: employeeData.hourlyRate ? parseFloat(employeeData.hourlyRate) : 0,
+        employmentType: employeeData.employmentType || 'hourly',
+        hourlyRate: employeeData.employmentType === 'hourly' ? parseFloat(employeeData.hourlyRate) || 0 : 0,
+        annualSalary: employeeData.employmentType === 'salary' ? parseFloat(employeeData.annualSalary) || 0 : 0,
+        paySchedule: employeeData.paySchedule || 'semi-monthly',
+        requireGps: employeeData.requireGps !== false,
         createdAt: new Date().toISOString(),
         createdBy: currentUser.uid,
-        active: true,
-        firstLogin: true,
-        ndaSigned: false,
-        ndaSignedDate: null,
-        ndaSignatureUrl: null,
-        startDate: new Date().toISOString()
+        active: true, firstLogin: true,
+        ndaSigned: false, ndaSignedDate: null, ndaSignatureUrl: null,
+        startDate: new Date().toISOString(),
       });
-      console.log('Step 6: Firestore document created successfully');
-
-      // Wait for Firestore to propagate
-      await new Promise(resolve => setTimeout(resolve, 500));
 
       Swal.fire({
-        icon: 'success',
-        title: 'Employee Created!',
+        icon: 'success', title: 'Employee Created!',
         html: `
-          <p><strong>${employeeData.name}</strong> has been created successfully!</p>
-          <p><strong>Job Title:</strong> ${employeeData.jobTitle}</p>
+          <p><strong>${employeeData.name}</strong> created!</p>
           <p><strong>Email:</strong> ${employeeData.email}</p>
-          <p><strong>Role:</strong> ${employeeData.role}</p>
+          <p><strong>Pay Type:</strong> ${employeeData.employmentType === 'salary' ? 'Salary' : 'Hourly'}</p>
           <p><strong>Temporary Password:</strong> ${employeeData.password}</p>
-          <p style="color: orange;">⚠️ Share this password with the employee.</p>
-          <p style="color: blue;">📝 They will sign the NDA on first login.</p>
+          <p style="color:orange;">⚠️ Share this password with the employee.</p>
+          <p style="color:blue;">📝 They will sign the NDA on first login.</p>
+          <hr/>
+          <p style="color:#555;font-size:0.9em;">💡 Tip: Use "Invite Employee" next time — they create their own password.</p>
         `,
-        confirmButtonText: 'Got it!'
+        confirmButtonText: 'Got it!',
       });
-
       loadEmployees();
-
-    } catch (error) {
-      console.error('Error creating employee:', error);
-      let errorMessage = error.message;
-      
-      if (error.code === 'auth/email-already-in-use') {
-        errorMessage = 'This email is already registered.';
-      } else if (error.code === 'auth/invalid-email') {
-        errorMessage = 'Invalid email address.';
-      } else if (error.code === 'auth/weak-password') {
-        errorMessage = 'Password too weak.';
-      } else if (error.code === 'auth/wrong-password') {
-        errorMessage = 'Incorrect password. Try again.';
-      }
-      
-      Swal.fire('Error', errorMessage, 'error');
+    } catch (err) {
+      const msg = err.code === 'auth/email-already-in-use' ? 'Email already registered.'
+        : err.code === 'auth/wrong-password' ? 'Incorrect password.'
+        : err.message;
+      Swal.fire('Error', msg, 'error');
     }
   };
 
   const handleUpdateEmployee = async () => {
+    if (!selectedEmployee) return;
     try {
-      if (!selectedEmployee) return;
-
       setLoading(true);
-
-      const updates = {
+      await updateDoc(doc(db, 'users', selectedEmployee.id), {
         name: formData.name,
         role: formData.role,
         jobTitle: formData.jobTitle,
         phoneNumber: formData.phoneNumber || '',
-        hourlyRate: formData.hourlyRate ? parseFloat(formData.hourlyRate) : 0,
+        employmentType: formData.employmentType || 'hourly',
+        hourlyRate: formData.employmentType === 'hourly' ? parseFloat(formData.hourlyRate) || 0 : 0,
+        annualSalary: formData.employmentType === 'salary' ? parseFloat(formData.annualSalary) || 0 : 0,
+        paySchedule: formData.paySchedule || 'semi-monthly',
+        requireGps: formData.requireGps !== false,
         updatedAt: new Date().toISOString(),
-        updatedBy: currentUser.uid
-      };
-
-      const userRef = doc(db, 'users', selectedEmployee.id);
-      await updateDoc(userRef, updates);
-
-      await Swal.fire({
-        icon: 'success',
-        title: 'Employee Updated!',
-        text: `${formData.name}'s information updated successfully.`,
+        updatedBy: currentUser.uid,
       });
-
+      Swal.fire({ icon: 'success', title: 'Employee Updated!', timer: 1500, showConfirmButton: false });
       handleCloseDialog();
       loadEmployees();
-
-    } catch (error) {
-      console.error('Error updating employee:', error);
-      Swal.fire('Error', 'Failed to update employee: ' + error.message, 'error');
+    } catch (err) {
+      Swal.fire('Error', 'Failed to update: ' + err.message, 'error');
     } finally {
       setLoading(false);
     }
   };
 
+  // ════════════════════════════════════════════════════════════════════════════
+  // TOGGLE ACTIVE / DELETE
+  // ════════════════════════════════════════════════════════════════════════════
   const handleToggleActive = async (employee) => {
-    const newActiveStatus = !employee.active;
-    
+    const newStatus = employee.active === false ? true : false;
     const result = await Swal.fire({
-      title: newActiveStatus ? 'Enable Employee?' : 'Disable Employee?',
-      html: `
-        <p>${newActiveStatus ? 'Enable' : 'Disable'} <strong>${employee.name}</strong>?</p>
-        <hr />
-        <div style="text-align: left; margin: 15px 0;">
-          ${newActiveStatus ? 
-            '<p>✅ They will be able to clock in again</p><p>✅ They will appear in the time clock</p>' :
-            '<p>❌ They will NOT be able to clock in</p><p>✅ Their records will be preserved</p>'
-          }
-        </div>
-      `,
-      icon: 'question',
-      showCancelButton: true,
-      confirmButtonText: newActiveStatus ? 'Enable' : 'Disable',
-      cancelButtonText: 'Cancel',
+      title: `${newStatus ? 'Enable' : 'Disable'} ${employee.name}?`,
+      html: newStatus
+        ? '<p>✅ They can clock in again</p><p>✅ They will appear in the time clock</p>'
+        : '<p>❌ They will NOT be able to clock in</p><p>✅ Records are preserved</p>',
+      icon: 'question', showCancelButton: true,
+      confirmButtonText: newStatus ? 'Enable' : 'Disable',
     });
-
-    if (result.isConfirmed) {
-      try {
-        await updateDoc(doc(db, 'users', employee.id), {
-          active: newActiveStatus,
-          updatedAt: new Date().toISOString(),
-          updatedBy: currentUser.uid,
-          ...(newActiveStatus ? {} : { inactivatedAt: new Date().toISOString() })
-        });
-
-        Swal.fire({
-          icon: 'success',
-          title: newActiveStatus ? 'Account Enabled!' : 'Account Disabled!',
-          text: `${employee.name}'s account has been ${newActiveStatus ? 'enabled' : 'disabled'}.`,
-          timer: 2000,
-          showConfirmButton: false,
-        });
-
-        loadEmployees();
-      } catch (error) {
-        console.error('Error toggling account status:', error);
-        Swal.fire('Error', 'Failed to update account status: ' + error.message, 'error');
-      }
-    }
+    if (!result.isConfirmed) return;
+    await updateDoc(doc(db, 'users', employee.id), {
+      active: newStatus,
+      updatedAt: new Date().toISOString(),
+      ...(newStatus ? {} : { inactivatedAt: new Date().toISOString() }),
+    });
+    Swal.fire({ icon: 'success', title: newStatus ? 'Enabled!' : 'Disabled!', timer: 1500, showConfirmButton: false });
+    loadEmployees();
   };
 
   const handleDeleteEmployee = async (employee) => {
     try {
-      // ✅ IMPROVEMENT D: Check orphaned data first
-      const timeEntriesSnap = await getDocs(
-        query(collection(db, 'job_time_entries'), where('crewEmail', '==', employee.email))
-      );
-      const paymentsSnap = await getDocs(
-        query(collection(db, 'crew_payments'), where('crewEmail', '==', employee.email))
-      );
-
-      const timeCount = timeEntriesSnap.size;
-      const paymentCount = paymentsSnap.size;
+      const timeSnap = await getDocs(query(collection(db, 'job_time_entries'), where('crewEmail', '==', employee.email)));
+      const paySnap  = await getDocs(query(collection(db, 'crew_payments'),     where('crewEmail', '==', employee.email)));
+      const timeCount = timeSnap.size, payCount = paySnap.size;
 
       const result = await Swal.fire({
         title: 'Delete Employee?',
         html: `
           <p>Delete <strong>${employee.name}</strong>?</p>
-          <hr />
-          <div style="text-align: left; margin: 15px 0; background-color: #fff3cd; padding: 10px; border-radius: 5px;">
-            <p style="margin: 5px 0;"><strong>⚠️ Warning:</strong></p>
-            <p style="margin: 5px 0;">• <strong>${timeCount}</strong> time ${timeCount === 1 ? 'entry' : 'entries'} will be orphaned</p>
-            <p style="margin: 5px 0;">• <strong>${paymentCount}</strong> payment ${paymentCount === 1 ? 'record' : 'records'} will be orphaned</p>
-            <p style="margin: 5px 0;">• This cannot be undone!</p>
+          <div style="text-align:left;margin:15px 0;background:#fff3cd;padding:10px;border-radius:5px;">
+            <p><strong>⚠️ Warning:</strong></p>
+            <p>• <strong>${timeCount}</strong> time ${timeCount === 1 ? 'entry' : 'entries'} will be orphaned</p>
+            <p>• <strong>${payCount}</strong> payment ${payCount === 1 ? 'record' : 'records'} will be orphaned</p>
+            <p>• This cannot be undone!</p>
           </div>
-          <hr />
-          <div style="text-align: left; margin: 15px 0; background-color: #d1ecf1; padding: 10px; border-radius: 5px;">
-            <p style="margin: 5px 0;"><strong>💡 Better option:</strong></p>
-            <p style="margin: 5px 0;">Mark as <em>Inactive</em> instead?</p>
-            <p style="margin: 5px 0;">• Preserves all records for taxes</p>
-            <p style="margin: 5px 0;">• Prevents them from clocking in</p>
-            <p style="margin: 5px 0;">• Can be reactivated later</p>
+          <div style="text-align:left;margin:15px 0;background:#d1ecf1;padding:10px;border-radius:5px;">
+            <p><strong>💡 Better option: Mark Inactive instead</strong></p>
+            <p>• Preserves all records for taxes</p>
+            <p>• Prevents them from clocking in</p>
+            <p>• Can be reactivated later</p>
           </div>
         `,
         icon: 'warning',
-        showDenyButton: true,
-        showCancelButton: true,
+        showDenyButton: true, showCancelButton: true,
         confirmButtonText: '🗑️ Delete Anyway',
         denyButtonText: '🔒 Mark Inactive Instead',
         cancelButtonText: 'Cancel',
@@ -474,233 +508,158 @@ const EmployeeAccountManager = ({ currentUser, currentUserRole }) => {
       });
 
       if (result.isConfirmed) {
-        // User chose to delete
         await deleteDoc(doc(db, 'users', employee.id));
-
         Swal.fire({
-          icon: 'success',
-          title: 'Deleted!',
-          html: `
-            <p>${employee.name} has been deleted.</p>
-            <p style="color: orange;">⚠️ ${timeCount + paymentCount} records are now orphaned.</p>
-            <p style="color: blue;">💡 Use the Orphaned Data Scanner to clean them up.</p>
-          `,
+          icon: 'success', title: 'Deleted!',
+          html: `<p>${employee.name} deleted.</p><p style="color:orange;">⚠️ ${timeCount + payCount} records are now orphaned.</p>`,
           timer: 4000,
         });
-
         loadEmployees();
       } else if (result.isDenied) {
-        // User chose to mark inactive instead
         await updateDoc(doc(db, 'users', employee.id), {
-          active: false,
-          inactivatedAt: new Date().toISOString(),
-          updatedBy: currentUser.uid,
+          active: false, inactivatedAt: new Date().toISOString(), updatedBy: currentUser.uid,
         });
-
         Swal.fire({
-          icon: 'success',
-          title: 'Marked Inactive!',
-          html: `
-            <p><strong>${employee.name}</strong> can no longer clock in.</p>
-            <p>✅ All records preserved for taxes</p>
-            <p>✅ Can be reactivated anytime</p>
-          `,
+          icon: 'success', title: 'Marked Inactive!',
+          html: `<p><strong>${employee.name}</strong> can no longer clock in.</p><p>✅ All records preserved for taxes</p>`,
           timer: 3000,
         });
-
         loadEmployees();
       }
-    } catch (error) {
-      console.error('Error:', error);
-      Swal.fire('Error', 'Failed to process request: ' + error.message, 'error');
+    } catch (err) {
+      Swal.fire('Error', 'Failed: ' + err.message, 'error');
     }
   };
 
+  // ════════════════════════════════════════════════════════════════════════════
+  // NDA VIEWER (preserved from original)
+  // ════════════════════════════════════════════════════════════════════════════
   const handleViewNDA = (employee) => {
     if (!employee.ndaSigned) {
-      Swal.fire('Info', 'This employee has not signed the NDA yet.', 'info');
-      return;
+      Swal.fire('Info', 'This employee has not signed the NDA yet.', 'info'); return;
     }
     setViewingNDA(employee);
     setNdaViewerOpen(true);
   };
 
-  const handleCloseNDAViewer = () => {
-    setNdaViewerOpen(false);
-    setViewingNDA(null);
-  };
+  const handleCloseNDAViewer = () => { setNdaViewerOpen(false); setViewingNDA(null); };
 
   const handleDownloadNDAPDF = async () => {
     if (!viewingNDA) return;
-
     try {
       setGeneratingPDF(true);
-
-      // Generate PDF
       const pdf = await generateEmployeeNDAPDF(viewingNDA, logoDataUrl);
-
-      // Download PDF
       const fileName = `NDA_${viewingNDA.name.replace(/\s+/g, '_')}_${new Date().toLocaleDateString().replace(/\//g, '-')}.pdf`;
       pdf.save(fileName);
-
-      await Swal.fire({
-        icon: 'success',
-        title: 'PDF Downloaded!',
-        text: `Saved as ${fileName}`,
-        timer: 2000,
-        showConfirmButton: false
-      });
-
-    } catch (error) {
-      console.error('Error generating PDF:', error);
-      Swal.fire({
-        icon: 'error',
-        title: 'Error',
-        text: 'Failed to generate PDF. Please try again.'
-      });
+      Swal.fire({ icon: 'success', title: 'PDF Downloaded!', text: `Saved as ${fileName}`, timer: 2000, showConfirmButton: false });
+    } catch (err) {
+      Swal.fire('Error', 'Failed to generate PDF. Please try again.', 'error');
     } finally {
       setGeneratingPDF(false);
     }
   };
 
   const handleViewSignature = () => {
-    if (viewingNDA && viewingNDA.ndaSignatureUrl) {
-      window.open(viewingNDA.ndaSignatureUrl, '_blank');
-    }
+    if (viewingNDA?.ndaSignatureUrl) window.open(viewingNDA.ndaSignatureUrl, '_blank');
   };
 
-  // ✅ NEW: Filter employees by status
+  // ── Helpers ───────────────────────────────────────────────────────────────
+  const getRoleLabel = r => ({ god: 'Owner', admin: 'Admin', crew: 'Crew' }[r] || 'User');
+  const getRoleBadgeColor = r => ({ god: 'error', admin: 'primary', crew: 'success' }[r] || 'default');
+
   const filteredEmployees = employees.filter(emp => {
-    if (filter === 'active') return emp.active !== false;
+    if (filter === 'active')   return emp.active !== false;
     if (filter === 'inactive') return emp.active === false;
-    return true; // 'all'
+    if (filter === 'pending')  return emp.firstLogin === true && emp.ndaSigned !== true;
+    return true;
   });
 
-  const getRoleLabel = (role) => {
-    switch(role) {
-      case 'god': return 'Owner';
-      case 'admin': return 'Admin';
-      case 'crew': return 'Crew';
-      default: return 'User';
-    }
+  const stats = {
+    total:   employees.length,
+    active:  employees.filter(e => e.active !== false).length,
+    ndaSigned: employees.filter(e => e.ndaSigned === true).length,
+    pending: employees.filter(e => e.firstLogin === true && e.ndaSigned !== true).length,
   };
 
-  const getRoleBadgeColor = (role) => {
-    switch(role) {
-      case 'god': return 'error';
-      case 'admin': return 'primary';
-      case 'crew': return 'success';
-      default: return 'default';
-    }
-  };
+  // ── Employment fields — reused in both dialogs ────────────────────────────
+  // EmploymentFields moved to top-level — see above component definition
 
+  // ════════════════════════════════════════════════════════════════════════════
+  // RENDER
+  // ════════════════════════════════════════════════════════════════════════════
   return (
     <Container maxWidth="xl" sx={{ mt: 4, mb: 4 }}>
+
       {/* Header */}
       <Card sx={{ mb: 3 }}>
         <CardContent>
           <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 2 }}>
-            <Box>
-              <Typography variant="h4" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                <PersonAddIcon sx={{ fontSize: 40, color: 'primary.main' }} />
-                Employee Account Manager
-              </Typography>
-              <Typography variant="body2" color="text.secondary">
-                Create and manage employee accounts, roles, and access permissions
-              </Typography>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+              <PersonAddIcon sx={{ fontSize: 40, color: 'primary.main' }} />
+              <Box>
+                <Typography variant="h5" fontWeight="bold">Employee Account Manager</Typography>
+                <Typography variant="body2" color="text.secondary">
+                  Invite employees by email — they set their own password and sign the NDA on first login
+                </Typography>
+              </Box>
             </Box>
-            <Button
-              variant="contained"
-              color="primary"
-              startIcon={<AddIcon />}
-              onClick={() => handleOpenDialog()}
-              size="large"
-            >
-              Add Employee
-            </Button>
+            <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+              <Button variant="outlined" startIcon={<AddIcon />} onClick={() => handleOpenDialog()}>
+                Add Manually
+              </Button>
+              <Button variant="contained" color="success" startIcon={<SendIcon />} onClick={openInvite}
+                sx={{ bgcolor: 'success.main', '&:hover': { bgcolor: 'success.dark' } }}>
+                Invite Employee
+              </Button>
+            </Box>
           </Box>
         </CardContent>
       </Card>
 
-      {/* Statistics Cards */}
+      {/* Stats */}
       <Grid container spacing={2} sx={{ mb: 3 }}>
-        <Grid item xs={12} sm={6} md={3}>
-          <Card>
-            <CardContent>
-              <Typography color="text.secondary" gutterBottom>
-                Total Employees
-              </Typography>
-              <Typography variant="h4">
-                {employees.length}
-              </Typography>
-            </CardContent>
-          </Card>
-        </Grid>
-        <Grid item xs={12} sm={6} md={3}>
-          <Card>
-            <CardContent>
-              <Typography color="text.secondary" gutterBottom>
-                Active
-              </Typography>
-              <Typography variant="h4" color="success.main">
-                {employees.filter(e => e.active !== false).length}
-              </Typography>
-            </CardContent>
-          </Card>
-        </Grid>
-        <Grid item xs={12} sm={6} md={3}>
-          <Card>
-            <CardContent>
-              <Typography color="text.secondary" gutterBottom>
-                NDA Signed
-              </Typography>
-              <Typography variant="h4" color="primary.main">
-                {employees.filter(e => e.ndaSigned === true).length}
-              </Typography>
-            </CardContent>
-          </Card>
-        </Grid>
-        <Grid item xs={12} sm={6} md={3}>
-          <Card>
-            <CardContent>
-              <Typography color="text.secondary" gutterBottom>
-                Pending NDA
-              </Typography>
-              <Typography variant="h4" color="warning.main">
-                {employees.filter(e => e.ndaSigned === false || e.firstLogin === true).length}
-              </Typography>
-            </CardContent>
-          </Card>
-        </Grid>
+        {[
+          { label: 'Total Employees', value: stats.total,    color: 'text.primary' },
+          { label: 'Active',          value: stats.active,   color: 'success.main' },
+          { label: 'NDA Signed',      value: stats.ndaSigned,color: 'primary.main' },
+          { label: 'Pending NDA',     value: stats.pending,  color: 'warning.main' },
+        ].map(s => (
+          <Grid item xs={6} sm={3} key={s.label}>
+            <Card>
+              <CardContent sx={{ textAlign: 'center', py: 2 }}>
+                <Typography color="text.secondary" variant="body2">{s.label}</Typography>
+                <Typography variant="h4" color={s.color} fontWeight="bold">{s.value}</Typography>
+              </CardContent>
+            </Card>
+          </Grid>
+        ))}
       </Grid>
 
-      {/* ✅ NEW: Filter Buttons */}
+      {/* Invite info banner */}
+      <Alert severity="info" sx={{ mb: 2 }} icon={<EmailIcon />}>
+        <strong>New: Invite System.</strong> Click "Invite Employee" to send a secure email link — no temp passwords, no re-authentication required.
+        The employee creates their own password and signs the NDA automatically.
+      </Alert>
+
+      {/* Filter Buttons */}
       <Box sx={{ mb: 2 }}>
         <ButtonGroup variant="contained" size="large">
-          <Button 
-            color={filter === 'all' ? 'primary' : 'inherit'}
-            onClick={() => setFilter('all')}
-          >
-            All ({employees.length})
-          </Button>
-          <Button 
-            color={filter === 'active' ? 'success' : 'inherit'}
-            onClick={() => setFilter('active')}
-          >
-            Active ({employees.filter(e => e.active !== false).length})
-          </Button>
-          <Button 
-            color={filter === 'inactive' ? 'warning' : 'inherit'}
-            onClick={() => setFilter('inactive')}
-          >
-            Inactive ({employees.filter(e => e.active === false).length})
-          </Button>
+          {[
+            { key: 'all',      label: `All (${stats.total})`,          color: 'primary' },
+            { key: 'active',   label: `Active (${stats.active})`,      color: 'success' },
+            { key: 'inactive', label: `Inactive (${employees.filter(e => e.active === false).length})`, color: 'warning' },
+            { key: 'pending',  label: `Pending NDA (${stats.pending})`,color: 'warning' },
+          ].map(f => (
+            <Button key={f.key} color={filter === f.key ? f.color : 'inherit'} onClick={() => setFilter(f.key)}>
+              {f.label}
+            </Button>
+          ))}
         </ButtonGroup>
       </Box>
 
       {/* Employee Table */}
       {loading ? (
-        <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', py: 8 }}>
+        <Box sx={{ display: 'flex', justifyContent: 'center', py: 8 }}>
           <CircularProgress size={60} />
         </Box>
       ) : (
@@ -708,16 +667,9 @@ const EmployeeAccountManager = ({ currentUser, currentUserRole }) => {
           <Table>
             <TableHead>
               <TableRow sx={{ backgroundColor: '#f5f5f5' }}>
-                <TableCell><strong>Name</strong></TableCell>
-                <TableCell><strong>Job Title</strong></TableCell>
-                <TableCell><strong>Email</strong></TableCell>
-                <TableCell><strong>Role</strong></TableCell>
-                <TableCell><strong>Phone</strong></TableCell>
-                <TableCell><strong>Hourly Rate</strong></TableCell>
-                <TableCell><strong>NDA Status</strong></TableCell>
-                <TableCell><strong>Status</strong></TableCell>
-                <TableCell><strong>Created</strong></TableCell>
-                <TableCell align="center"><strong>Actions</strong></TableCell>
+                {['Name / Title', 'Email', 'Role', 'Pay Type', 'Rate', 'GPS', 'NDA Status', 'Status', 'Created', 'Actions'].map(h => (
+                  <TableCell key={h}><strong>{h}</strong></TableCell>
+                ))}
               </TableRow>
             </TableHead>
             <TableBody>
@@ -725,224 +677,313 @@ const EmployeeAccountManager = ({ currentUser, currentUserRole }) => {
                 <TableRow>
                   <TableCell colSpan={10} align="center">
                     <Typography variant="body2" color="text.secondary" sx={{ py: 3 }}>
-                      {filter === 'active' && 'No active employees.'}
-                      {filter === 'inactive' && 'No inactive employees.'}
-                      {filter === 'all' && 'No employees yet. Click "Add Employee" to create the first one!'}
+                      No employees found for this filter.
                     </Typography>
                   </TableCell>
                 </TableRow>
               ) : (
-                filteredEmployees.map((employee) => (
-                  <TableRow key={employee.id} hover>
-                    <TableCell>{employee.name || 'N/A'}</TableCell>
-                    <TableCell>
-                      <Chip 
-                        label={employee.jobTitle || 'N/A'} 
-                        size="small"
-                        variant="outlined"
-                      />
-                    </TableCell>
-                    <TableCell>{employee.email || 'N/A'}</TableCell>
-                    <TableCell>
-                      <Chip 
-                        label={getRoleLabel(employee.role)} 
-                        color={getRoleBadgeColor(employee.role)} 
-                        size="small"
-                      />
-                    </TableCell>
-                    <TableCell>{employee.phoneNumber || 'N/A'}</TableCell>
-                    <TableCell>
-                      {employee.hourlyRate ? `$${employee.hourlyRate.toFixed(2)}/hr` : 'N/A'}
-                    </TableCell>
-                    <TableCell>
-                      {employee.ndaSigned ? (
-                        <Chip 
-                          icon={<CheckCircleIcon />}
-                          label="Signed" 
-                          color="success" 
-                          size="small"
-                          onClick={() => handleViewNDA(employee)}
-                          sx={{ cursor: 'pointer' }}
-                        />
-                      ) : (
-                        <Chip 
-                          icon={<PendingIcon />}
-                          label="Pending" 
-                          color="warning" 
-                          size="small"
-                        />
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      <Chip 
-                        label={employee.active !== false ? 'Active' : 'Disabled'} 
-                        color={employee.active !== false ? 'success' : 'default'}
-                        size="small"
-                      />
-                    </TableCell>
-                    <TableCell>
-                      {employee.createdAt ? new Date(employee.createdAt).toLocaleDateString() : 'N/A'}
-                    </TableCell>
-                    <TableCell align="center">
-                      <IconButton
-                        size="small"
-                        color="primary"
-                        onClick={() => handleOpenDialog(employee)}
-                        title="Edit Employee"
-                      >
-                        <EditIcon fontSize="small" />
-                      </IconButton>
-                      <IconButton
-                        size="small"
-                        color={employee.active !== false ? 'warning' : 'success'}
-                        onClick={() => handleToggleActive(employee)}
-                        title={employee.active !== false ? 'Disable Account' : 'Enable Account'}
-                      >
-                        {employee.active !== false ? <LockIcon fontSize="small" /> : <LockOpenIcon fontSize="small" />}
-                      </IconButton>
-                      {employee.id !== currentUser.uid && (
-                        <IconButton
-                          size="small"
-                          color="error"
-                          onClick={() => handleDeleteEmployee(employee)}
-                          title="Delete Employee"
-                        >
-                          <DeleteIcon fontSize="small" />
+                filteredEmployees.map(employee => {
+                  const empType = employee.employmentType || (employee.role === 'crew' ? 'hourly' : 'salary');
+                  const isPending = employee.firstLogin === true && employee.ndaSigned !== true;
+                  return (
+                    <TableRow key={employee.id} hover sx={{ opacity: employee.active === false ? 0.55 : 1 }}>
+                      <TableCell>
+                        <Typography fontWeight="bold">{employee.name || 'N/A'}</Typography>
+                        <Chip label={employee.jobTitle || 'N/A'} size="small" variant="outlined" />
+                      </TableCell>
+                      <TableCell>{employee.email || 'N/A'}</TableCell>
+                      <TableCell>
+                        <Chip label={getRoleLabel(employee.role)} color={getRoleBadgeColor(employee.role)} size="small" />
+                      </TableCell>
+                      <TableCell>
+                        <Chip label={empType === 'salary' ? 'Salary' : 'Hourly'} size="small"
+                          color={empType === 'salary' ? 'info' : 'default'} variant="outlined" />
+                      </TableCell>
+                      <TableCell>
+                        {empType === 'salary'
+                          ? <Box>
+                              <Typography variant="body2">${(employee.annualSalary || 0).toLocaleString()}/yr</Typography>
+                              <Typography variant="caption" color="text.secondary">
+                                ${calcPerPeriod(employee.annualSalary, employee.paySchedule)}/period
+                              </Typography>
+                            </Box>
+                          : <Typography variant="body2">
+                              {employee.hourlyRate ? `$${parseFloat(employee.hourlyRate).toFixed(2)}/hr` : 'N/A'}
+                            </Typography>
+                        }
+                      </TableCell>
+                      <TableCell>
+                        {empType === 'hourly'
+                          ? <Chip label={employee.requireGps !== false ? 'Required' : 'Skipped'} size="small"
+                                  color={employee.requireGps !== false ? 'success' : 'default'} />
+                          : <Typography variant="caption" color="text.secondary">N/A</Typography>
+                        }
+                      </TableCell>
+                      <TableCell>
+                        {employee.ndaSigned
+                          ? <Chip icon={<CheckCircleIcon />} label="Signed" color="success" size="small"
+                              onClick={() => handleViewNDA(employee)} sx={{ cursor: 'pointer' }} />
+                          : isPending
+                            ? <Chip icon={<PendingIcon />} label="Pending" color="warning" size="small" />
+                            : <Chip label="Not Sent" size="small" />
+                        }
+                      </TableCell>
+                      <TableCell>
+                        <Chip label={employee.active !== false ? 'Active' : 'Disabled'}
+                          color={employee.active !== false ? 'success' : 'default'} size="small" />
+                      </TableCell>
+                      <TableCell>
+                        {employee.createdAt ? new Date(employee.createdAt).toLocaleDateString() : 'N/A'}
+                      </TableCell>
+                      <TableCell>
+                        <IconButton size="small" color="primary" title="Edit" onClick={() => handleOpenDialog(employee)}>
+                          <EditIcon fontSize="small" />
                         </IconButton>
-                      )}
-                    </TableCell>
-                  </TableRow>
-                ))
+                        {isPending && (
+                          <IconButton size="small" color="info" title="Resend Invite" onClick={() => handleResendInvite(employee)}>
+                            <EmailIcon fontSize="small" />
+                          </IconButton>
+                        )}
+                        <IconButton size="small"
+                          color={employee.active !== false ? 'warning' : 'success'}
+                          title={employee.active !== false ? 'Disable Account' : 'Enable Account'}
+                          onClick={() => handleToggleActive(employee)}>
+                          {employee.active !== false ? <LockIcon fontSize="small" /> : <LockOpenIcon fontSize="small" />}
+                        </IconButton>
+                        {employee.id !== currentUser.uid && (
+                          <IconButton size="small" color="error" title="Delete" onClick={() => handleDeleteEmployee(employee)}>
+                            <DeleteIcon fontSize="small" />
+                          </IconButton>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })
               )}
             </TableBody>
           </Table>
         </TableContainer>
       )}
 
-      {/* Add/Edit Employee Dialog */}
-      <Dialog open={openDialog} onClose={handleCloseDialog} maxWidth="sm" fullWidth>
-        <DialogTitle>
-          {editMode ? '✏️ Edit Employee' : '➕ Add New Employee'}
+      )}
+
+      {/* ── PENDING INVITES SECTION ────────────────────────────────────────── */}
+      <Box sx={{ mt: 4, mb: 2 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
+          <Typography variant="h6" fontWeight="bold" sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <SendIcon color="info" />
+            Pending Invites
+            {pendingInvites.length > 0 && (
+              <Chip label={pendingInvites.length} color="info" size="small" />
+            )}
+          </Typography>
+          <Button size="small" variant="outlined" onClick={loadPendingInvites}>
+            Refresh
+          </Button>
+        </Box>
+        <Alert severity="info" sx={{ mb: 2 }}>
+          These employees have been sent an invite but have not yet created their account.
+          The link expires 72 hours after sending.
+        </Alert>
+
+        {invitesLoading ? (
+          <Box sx={{ textAlign: 'center', py: 3 }}><CircularProgress size={32} /></Box>
+        ) : pendingInvites.length === 0 ? (
+          <Paper sx={{ p: 3, textAlign: 'center', bgcolor: 'grey.50' }}>
+            <Typography color="text.secondary">No pending invites. All sent invites have been accepted.</Typography>
+          </Paper>
+        ) : (
+          <TableContainer component={Paper}>
+            <Table size="small">
+              <TableHead>
+                <TableRow sx={{ bgcolor: 'info.main' }}>
+                  {['Name', 'Email', 'Role', 'Pay Type', 'Sent', 'Expires', 'Status', 'Actions'].map(h => (
+                    <TableCell key={h} sx={{ color: 'white', fontWeight: 'bold' }}>{h}</TableCell>
+                  ))}
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {pendingInvites.map(invite => {
+                  const isExpired = new Date(invite.expiresAt) < new Date();
+                  return (
+                    <TableRow key={invite.id} sx={{ bgcolor: isExpired ? 'error.50' : 'white' }}>
+                      <TableCell><Typography fontWeight="bold">{invite.name}</Typography></TableCell>
+                      <TableCell>{invite.email}</TableCell>
+                      <TableCell>
+                        <Chip label={invite.role || 'crew'} size="small"
+                          color={invite.role === 'admin' ? 'primary' : 'default'} />
+                      </TableCell>
+                      <TableCell>
+                        <Chip
+                          label={invite.employmentType === 'salary' ? 'Salary' : 'Hourly'}
+                          size="small" variant="outlined"
+                          color={invite.employmentType === 'salary' ? 'info' : 'default'}
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <Typography variant="body2">
+                          {invite.createdAt ? new Date(invite.createdAt).toLocaleDateString() : '—'}
+                        </Typography>
+                      </TableCell>
+                      <TableCell>
+                        <Typography variant="body2" color={isExpired ? 'error' : 'text.secondary'}>
+                          {isExpired ? 'EXPIRED' : invite.expiresAt ? new Date(invite.expiresAt).toLocaleDateString() : '—'}
+                        </Typography>
+                      </TableCell>
+                      <TableCell>
+                        <Chip
+                          label={isExpired ? 'Expired' : 'Awaiting Signup'}
+                          size="small"
+                          color={isExpired ? 'error' : 'warning'}
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <Button size="small" variant="outlined" color="info"
+                          startIcon={<EmailIcon />}
+                          onClick={() => handleResendInvite(invite)}
+                          sx={{ mr: 1 }}>
+                          Resend
+                        </Button>
+                        <Button size="small" variant="outlined" color="error"
+                          onClick={() => handleCancelInvite(invite)}>
+                          Cancel
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        )}
+      </Box>
+
+      {/* ── INVITE DIALOG ─────────────────────────────────────────────────── */}
+      <Dialog open={inviteOpen} onClose={() => setInviteOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle sx={{ bgcolor: 'success.main', color: 'white' }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <SendIcon /><span>Invite New Employee</span>
+          </Box>
         </DialogTitle>
+        <DialogContent sx={{ pt: 3 }}>
+          <Alert severity="info" sx={{ mb: 3 }}>
+            A secure email invitation will be sent. The employee creates their own password and signs the NDA on first login.
+            No temporary passwords needed.
+          </Alert>
+          <Grid container spacing={2}>
+            <Grid item xs={12} sm={6}>
+              <TextField fullWidth required label="Full Name" value={inviteForm.name}
+                onChange={e => setInviteForm({ ...inviteForm, name: e.target.value })} />
+            </Grid>
+            <Grid item xs={12} sm={6}>
+              <TextField fullWidth required label="Email Address" type="email" value={inviteForm.email}
+                onChange={e => setInviteForm({ ...inviteForm, email: e.target.value })} />
+            </Grid>
+            <Grid item xs={12} sm={6}>
+              <TextField select fullWidth label="Role" value={inviteForm.role}
+                onChange={e => setInviteForm({ ...inviteForm, role: e.target.value })}>
+                <MenuItem value="crew">👷 Crew Member</MenuItem>
+                <MenuItem value="admin">⚙️ Admin</MenuItem>
+              </TextField>
+            </Grid>
+            <Grid item xs={12} sm={6}>
+              <TextField select fullWidth label="Job Title" value={inviteForm.jobTitle}
+                onChange={e => setInviteForm({ ...inviteForm, jobTitle: e.target.value })}>
+                <MenuItem value="Owner">👑 Owner</MenuItem>
+                <MenuItem value="Manager">⚙️ Manager</MenuItem>
+                <MenuItem value="Foreman">🔨 Foreman</MenuItem>
+                <MenuItem value="Crew Member">👷 Crew Member</MenuItem>
+                <MenuItem value="Equipment Operator">🚜 Equipment Operator</MenuItem>
+                <MenuItem value="Landscaper">🌳 Landscaper</MenuItem>
+                <MenuItem value="Office Manager">🏢 Office Manager</MenuItem>
+              </TextField>
+            </Grid>
+            <Grid item xs={12} sm={6}>
+              <TextField fullWidth label="Phone Number" value={inviteForm.phoneNumber}
+                onChange={e => setInviteForm({ ...inviteForm, phoneNumber: e.target.value })} />
+            </Grid>
+            <EmploymentFields form={inviteForm} setForm={setInviteForm} />
+          </Grid>
+        </DialogContent>
+        <DialogActions sx={{ p: 2, gap: 1 }}>
+          <Button onClick={() => setInviteOpen(false)}>Cancel</Button>
+          <Button variant="contained" color="success"
+            startIcon={inviteLoading ? <CircularProgress size={18} /> : <SendIcon />}
+            onClick={handleSendInvite} disabled={inviteLoading}>
+            {inviteLoading ? 'Sending...' : 'Send Invite'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* ── ADD / EDIT DIALOG ─────────────────────────────────────────────── */}
+      <Dialog open={openDialog} onClose={handleCloseDialog} maxWidth="sm" fullWidth>
+        <DialogTitle>{editMode ? '✏️ Edit Employee' : '➕ Add New Employee'}</DialogTitle>
         <DialogContent>
           <Grid container spacing={2} sx={{ mt: 1 }}>
             <Grid item xs={12}>
-              <TextField
-                fullWidth
-                label="Full Name *"
-                name="name"
-                value={formData.name}
-                onChange={handleInputChange}
-                required
-              />
+              <TextField fullWidth required label="Full Name *" name="name"
+                value={formData.name} onChange={handleInputChange} />
             </Grid>
             <Grid item xs={12}>
-              <TextField
-                fullWidth
-                label="Email *"
-                name="email"
-                type="email"
-                value={formData.email}
-                onChange={handleInputChange}
-                required
-                disabled={editMode}
-              />
+              <TextField fullWidth required label="Email *" name="email" type="email"
+                value={formData.email} onChange={handleInputChange} disabled={editMode} />
             </Grid>
-            <Grid item xs={12}>
-              <TextField
-                fullWidth
-                label={editMode ? 'New Password (optional)' : 'Password *'}
-                name="password"
-                type="password"
-                value={formData.password}
-                onChange={handleInputChange}
-                required={!editMode}
-                helperText={
-                  editMode 
-                    ? 'Leave blank to keep current password.' 
-                    : 'Minimum 6 characters.'
-                }
-              />
-            </Grid>
-            <Grid item xs={12}>
+            {!editMode && (
+              <Grid item xs={12}>
+                <TextField fullWidth required label="Password *" name="password" type="password"
+                  value={formData.password} onChange={handleInputChange}
+                  helperText="Minimum 6 characters. Consider using Invite Employee instead." />
+              </Grid>
+            )}
+            <Grid item xs={12} sm={6}>
               <FormControl fullWidth>
                 <InputLabel>Role *</InputLabel>
-                <Select
-                  name="role"
-                  value={formData.role}
-                  onChange={handleInputChange}
-                  label="Role *"
-                >
+                <Select name="role" value={formData.role} onChange={handleInputChange} label="Role *">
                   <MenuItem value="crew">👷 Crew - Time Clock only</MenuItem>
                   <MenuItem value="admin">⚙️ Admin - Most features</MenuItem>
                   <MenuItem value="god">👑 God - Full access</MenuItem>
                 </Select>
               </FormControl>
             </Grid>
-            
-            <Grid item xs={12}>
+            <Grid item xs={12} sm={6}>
               <FormControl fullWidth>
                 <InputLabel>Job Title *</InputLabel>
-                <Select
-                  name="jobTitle"
-                  value={formData.jobTitle}
-                  onChange={handleInputChange}
-                  label="Job Title *"
-                >
+                <Select name="jobTitle" value={formData.jobTitle} onChange={handleInputChange} label="Job Title *">
                   <MenuItem value="Owner">👑 Owner</MenuItem>
                   <MenuItem value="Manager">⚙️ Manager</MenuItem>
                   <MenuItem value="Foreman">🔨 Foreman</MenuItem>
                   <MenuItem value="Crew Member">👷 Crew Member</MenuItem>
                   <MenuItem value="Equipment Operator">🚜 Equipment Operator</MenuItem>
                   <MenuItem value="Landscaper">🌳 Landscaper</MenuItem>
+                  <MenuItem value="Office Manager">🏢 Office Manager</MenuItem>
                 </Select>
               </FormControl>
             </Grid>
-
             <Grid item xs={12} sm={6}>
-              <TextField
-                fullWidth
-                label="Phone Number"
-                name="phoneNumber"
-                value={formData.phoneNumber}
-                onChange={handleInputChange}
-              />
+              <TextField fullWidth label="Phone Number" name="phoneNumber"
+                value={formData.phoneNumber} onChange={handleInputChange} />
             </Grid>
-            <Grid item xs={12} sm={6}>
-              <TextField
-                fullWidth
-                label="Hourly Rate"
-                name="hourlyRate"
-                type="number"
-                value={formData.hourlyRate}
-                onChange={handleInputChange}
-                InputProps={{
-                  startAdornment: <Typography>$</Typography>,
-                }}
-              />
-            </Grid>
+            <EmploymentFields
+              form={formData}
+              setForm={editMode
+                ? (updated) => setFormData(updated)
+                : (updated) => setFormData(updated)
+              }
+            />
           </Grid>
         </DialogContent>
         <DialogActions>
-          <Button onClick={handleCloseDialog} color="inherit">
-            Cancel
-          </Button>
-          <Button
-            onClick={editMode ? handleUpdateEmployee : handleCreateEmployee}
-            variant="contained"
-            color="primary"
-            disabled={loading}
-          >
+          <Button onClick={handleCloseDialog} color="inherit">Cancel</Button>
+          <Button onClick={editMode ? handleUpdateEmployee : handleCreateEmployee}
+            variant="contained" color="primary" disabled={loading}>
             {editMode ? 'Update Employee' : 'Create Employee'}
           </Button>
         </DialogActions>
       </Dialog>
 
-      {/* NDA Viewer Dialog */}
+      {/* ── NDA VIEWER DIALOG (preserved from original) ────────────────────── */}
       <Dialog open={ndaViewerOpen} onClose={handleCloseNDAViewer} maxWidth="md" fullWidth>
-        <DialogTitle>
-          📋 NDA Signature - {viewingNDA?.name}
-        </DialogTitle>
+        <DialogTitle>📋 NDA Signature — {viewingNDA?.name}</DialogTitle>
         <DialogContent>
           {viewingNDA && (
             <Grid container spacing={3}>
@@ -951,115 +992,50 @@ const EmployeeAccountManager = ({ currentUser, currentUserRole }) => {
                   <strong>NDA Signed!</strong> This employee has completed and signed the Non-Disclosure Agreement.
                 </Alert>
               </Grid>
-
-              <Grid item xs={12} sm={6}>
-                <Typography variant="subtitle2" color="text.secondary" gutterBottom>
-                  Employee Name
-                </Typography>
-                <Typography variant="body1" sx={{ fontWeight: 600 }}>
-                  {viewingNDA.name}
-                </Typography>
-              </Grid>
-
-              <Grid item xs={12} sm={6}>
-                <Typography variant="subtitle2" color="text.secondary" gutterBottom>
-                  Email
-                </Typography>
-                <Typography variant="body1">
-                  {viewingNDA.email}
-                </Typography>
-              </Grid>
-
-              <Grid item xs={12} sm={6}>
-                <Typography variant="subtitle2" color="text.secondary" gutterBottom>
-                  Job Title
-                </Typography>
-                <Typography variant="body1">
-                  {viewingNDA.jobTitle}
-                </Typography>
-              </Grid>
-
-              <Grid item xs={12} sm={6}>
-                <Typography variant="subtitle2" color="text.secondary" gutterBottom>
-                  Date Signed
-                </Typography>
-                <Typography variant="body1">
-                  {viewingNDA.ndaSignedDate 
-                    ? new Date(viewingNDA.ndaSignedDate).toLocaleString()
-                    : 'N/A'}
-                </Typography>
-              </Grid>
-
+              {[
+                { label: 'Employee Name', value: viewingNDA.name },
+                { label: 'Email',         value: viewingNDA.email },
+                { label: 'Job Title',     value: viewingNDA.jobTitle },
+                { label: 'Date Signed',   value: viewingNDA.ndaSignedDate ? new Date(viewingNDA.ndaSignedDate).toLocaleString() : 'N/A' },
+              ].map(f => (
+                <Grid item xs={12} sm={6} key={f.label}>
+                  <Typography variant="subtitle2" color="text.secondary" gutterBottom>{f.label}</Typography>
+                  <Typography variant="body1" fontWeight={f.label === 'Employee Name' ? 600 : 400}>{f.value}</Typography>
+                </Grid>
+              ))}
               <Grid item xs={12}>
-                <Typography variant="subtitle2" color="text.secondary" gutterBottom>
-                  Digital Signature
-                </Typography>
-                <Paper 
-                  elevation={2} 
-                  sx={{ 
-                    p: 2, 
-                    backgroundColor: '#f5f5f5',
-                    display: 'flex',
-                    justifyContent: 'center',
-                    alignItems: 'center',
-                    minHeight: 200
-                  }}
-                >
+                <Typography variant="subtitle2" color="text.secondary" gutterBottom>Digital Signature</Typography>
+                <Paper elevation={2} sx={{ p: 2, bgcolor: '#f5f5f5', display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: 200 }}>
                   {viewingNDA.ndaSignatureUrl ? (
                     <Box sx={{ textAlign: 'center' }}>
-                      <img 
-                        src={viewingNDA.ndaSignatureUrl} 
-                        alt="Signature"
-                        style={{ 
-                          maxWidth: '100%', 
-                          maxHeight: '200px',
-                          border: '2px solid #1976d2',
-                          borderRadius: '4px',
-                          backgroundColor: 'white'
-                        }}
-                      />
-                      <Button
-                        variant="outlined"
-                        size="small"
-                        onClick={handleViewSignature}
-                        sx={{ mt: 2 }}
-                      >
+                      <img src={viewingNDA.ndaSignatureUrl} alt="Signature"
+                        style={{ maxWidth: '100%', maxHeight: 200, border: '2px solid #1976d2', borderRadius: 4, backgroundColor: 'white' }} />
+                      <Button variant="outlined" size="small" onClick={handleViewSignature} sx={{ mt: 2 }}>
                         View Full Size
                       </Button>
                     </Box>
                   ) : (
-                    <Typography color="text.secondary">
-                      No signature image available
-                    </Typography>
+                    <Typography color="text.secondary">No signature image available</Typography>
                   )}
                 </Paper>
               </Grid>
-
               <Grid item xs={12}>
                 <Alert severity="info">
-                  <Typography variant="body2">
-                    <strong>Complete NDA Document:</strong> Download the full signed NDA as a PDF with all terms, conditions, and the employee's signature.
-                  </Typography>
+                  <strong>Complete NDA Document:</strong> Download the full signed NDA as a PDF with all terms and the employee's signature.
                 </Alert>
               </Grid>
             </Grid>
           )}
         </DialogContent>
         <DialogActions>
-          <Button onClick={handleCloseNDAViewer} color="inherit">
-            Close
-          </Button>
-          <Button
-            onClick={handleDownloadNDAPDF}
-            variant="contained"
-            color="primary"
-            disabled={generatingPDF}
-            startIcon={generatingPDF ? <CircularProgress size={20} color="inherit" /> : null}
-          >
+          <Button onClick={handleCloseNDAViewer} color="inherit">Close</Button>
+          <Button onClick={handleDownloadNDAPDF} variant="contained" color="primary" disabled={generatingPDF}
+            startIcon={generatingPDF ? <CircularProgress size={20} color="inherit" /> : null}>
             {generatingPDF ? 'Generating PDF...' : 'Download Full NDA PDF'}
           </Button>
         </DialogActions>
       </Dialog>
+
     </Container>
   );
 };

@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { doc, getDoc, updateDoc } from "firebase/firestore";
+import { doc, getDoc, updateDoc, collection, query, where, getDocs } from "firebase/firestore";
 import { db } from "./firebase";
 import {
   Container,
@@ -19,9 +19,11 @@ import LinkIcon from '@mui/icons-material/Link';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import MicIcon from '@mui/icons-material/Mic';
 import MicOffIcon from '@mui/icons-material/MicOff';
+import EmailIcon from '@mui/icons-material/Email';
 import Swal from "sweetalert2";
 import SignatureCanvas from "react-signature-canvas";
-import { notifyBidAccepted } from "./pushoverNotificationService";
+import jsPDF from "jspdf";
+import { sendBidEmail } from "./emailService";
 
 export default function BidEditor() {
   const { id } = useParams();
@@ -29,6 +31,8 @@ export default function BidEditor() {
   const [bid, setBid] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [customerEmail, setCustomerEmail] = useState("");
   
   // Voice recognition state
   const [listening, setListening] = useState(null);
@@ -42,6 +46,17 @@ export default function BidEditor() {
   const [contractorSignedAt, setContractorSignedAt] = useState("");
   const [clientSigData, setClientSigData] = useState(null);
   const [contractorSigData, setContractorSigData] = useState(null);
+
+  // Logo for PDF
+  const [logoDataUrl, setLogoDataUrl] = useState(null);
+
+  const COMPANY = {
+    name: "Kings Canyon Landscaping LLC",
+    cityState: "Bullhead City, AZ",
+    phone: "(928) 450-5733",
+    email: "kingscanyon775@gmail.com",
+    logoPath: "/logo-kcl.png",
+  };
 
   // Smart lumber formatting function
   const formatLumber = (text) => {
@@ -178,6 +193,60 @@ export default function BidEditor() {
     }
   }, [contractorSigData]);
 
+  // ✅ HOOK 5: Preload logo for PDF
+  useEffect(() => {
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => {
+      try {
+        const c = document.createElement("canvas");
+        c.width = img.width;
+        c.height = img.height;
+        const ctx = c.getContext("2d");
+        ctx.drawImage(img, 0, 0);
+        setLogoDataUrl(c.toDataURL("image/png"));
+      } catch (e) {
+        console.error("Logo loading error:", e);
+      }
+    };
+    img.onerror = () => setLogoDataUrl(null);
+    img.src = COMPANY.logoPath;
+  }, []);
+
+  // ✅ HOOK 6: Look up customer email
+  useEffect(() => {
+    const findCustomerEmail = async () => {
+      if (!bid) return;
+      
+      if (bid.customerEmail) {
+        setCustomerEmail(bid.customerEmail);
+        return;
+      }
+      
+      try {
+        if (bid.customerId) {
+          const customerDoc = await getDoc(doc(db, "customers", bid.customerId));
+          if (customerDoc.exists() && customerDoc.data().email) {
+            setCustomerEmail(customerDoc.data().email);
+            return;
+          }
+        }
+        
+        if (bid.customerName) {
+          const q = query(collection(db, "customers"), where("name", "==", bid.customerName));
+          const snap = await getDocs(q);
+          if (!snap.empty && snap.docs[0].data().email) {
+            setCustomerEmail(snap.docs[0].data().email);
+          }
+        }
+      } catch (err) {
+        console.error("Error looking up customer email:", err);
+      }
+    };
+    
+    findCustomerEmail();
+  }, [bid?.customerId, bid?.customerName]);
+
   const handleChange = (e) => {
     const { name, value } = e.target;
     setBid({ ...bid, [name]: value });
@@ -311,6 +380,17 @@ export default function BidEditor() {
       return;
     }
 
+    if (!bid.description || !bid.description.trim()) {
+      Swal.fire({
+        icon: "warning",
+        title: "Description Required",
+        html: `Please describe the work to be done.<br/><br/>
+               <small>This appears on the bid document and helps your crew know what the job is.</small>`,
+        confirmButtonText: "OK",
+      });
+      return;
+    }
+
     setSaving(true);
     try {
       const docRef = doc(db, "bids", id);
@@ -327,13 +407,6 @@ export default function BidEditor() {
         updatedAt: new Date().toISOString(),
       });
       
-      // Notify if client just signed the bid
-      if (clientSigData && !bid.clientSignature) {
-        try {
-          await notifyBidAccepted(bid.customerName, bid.amount);
-        } catch (e) { console.error("Pushover error:", e); }
-      }
-
       await Swal.fire("Saved", "Bid updated successfully.", "success");
       navigate("/bids");
     } catch (e) {
@@ -345,7 +418,7 @@ export default function BidEditor() {
   };
 
   const handleSendForSignature = () => {
-    const signingLink = `${window.location.origin}/sign-bid/${id}?token=${bid.signingToken}`;
+    const signingLink = `${window.location.origin}/public/sign-bid/${id}?token=${bid.signingToken}`;
     
     navigator.clipboard.writeText(signingLink).then(() => {
       Swal.fire({
@@ -378,6 +451,264 @@ export default function BidEditor() {
         `,
       });
     });
+  };
+
+  // helper for PDF text wrapping
+  const writeParagraph = (pdfDoc, text, x, yStart, maxWidth) => {
+    const lines = pdfDoc.splitTextToSize(text, maxWidth);
+    pdfDoc.text(lines, x, yStart);
+    return yStart + lines.length * 12;
+  };
+
+  // Build Bid PDF and return jsPDF object
+  const buildBidPDF = () => {
+    if (!bid) return null;
+
+    const docPDF = new jsPDF({ unit: "pt", format: "letter" });
+    const W = docPDF.internal.pageSize.getWidth();
+    const H = docPDF.internal.pageSize.getHeight();
+
+    // Frame
+    docPDF.setDrawColor(60);
+    docPDF.setLineWidth(1);
+    docPDF.rect(28, 28, W - 56, H - 56);
+
+    // Logo
+    if (logoDataUrl) {
+      try {
+        docPDF.addImage(logoDataUrl, "PNG", 40, 42, 60, 60);
+      } catch (e) {
+        console.error("Error adding logo:", e);
+      }
+    }
+
+    // Company info
+    docPDF.setFont("helvetica", "bold");
+    docPDF.setFontSize(14);
+    docPDF.text(COMPANY.name, 110, 50);
+    docPDF.setFont("helvetica", "normal");
+    docPDF.setFontSize(10);
+    docPDF.text(COMPANY.cityState, 110, 66);
+    docPDF.text(COMPANY.phone, 110, 80);
+    docPDF.text(COMPANY.email, 110, 94);
+
+    // Title
+    docPDF.setFont("helvetica", "bold");
+    docPDF.setFontSize(14);
+    docPDF.text("Estimate / Bid", W - 40, 50, { align: "right" });
+
+    // Meta
+    docPDF.setFont("helvetica", "normal");
+    docPDF.setFontSize(10);
+    docPDF.text(`Bid No.: ${id.slice(-8)}`, W - 40, 70, { align: "right" });
+    docPDF.text(`Date: ${new Date().toLocaleDateString()}`, W - 40, 84, { align: "right" });
+
+    // Divider
+    docPDF.setDrawColor(150);
+    docPDF.line(40, 110, W - 40, 110);
+
+    let y = 130;
+
+    const writeLabelValue = (label, value) => {
+      docPDF.setFont("helvetica", "bold");
+      docPDF.text(`${label}:`, 40, y);
+      docPDF.setFont("helvetica", "normal");
+      docPDF.text(`${value || "N/A"}`, 140, y, { maxWidth: W - 180 });
+      y += 18;
+    };
+
+    writeLabelValue("Customer", bid.customerName);
+    writeLabelValue("Amount", bid.amount ? `$${parseFloat(bid.amount).toFixed(2)}` : "N/A");
+
+    // Description
+    y += 10;
+    docPDF.setFont("helvetica", "bold");
+    docPDF.setFontSize(11);
+    docPDF.text("Description of Work", 40, y);
+    y += 14;
+    docPDF.setFont("helvetica", "normal");
+    docPDF.setFontSize(10);
+    const desc = docPDF.splitTextToSize(bid.description || "N/A", W - 80);
+    docPDF.text(desc, 40, y);
+    y += desc.length * 12 + 16;
+
+    // Materials
+    if (bid.materials) {
+      docPDF.setFont("helvetica", "bold");
+      docPDF.setFontSize(11);
+      docPDF.text("Materials", 40, y);
+      y += 14;
+      docPDF.setFont("helvetica", "normal");
+      docPDF.setFontSize(10);
+      const mats = docPDF.splitTextToSize(bid.materials, W - 80);
+      docPDF.text(mats, 40, y);
+      y += mats.length * 12 + 16;
+    }
+
+    // Terms
+    y += 10;
+    docPDF.setFont("helvetica", "bold");
+    docPDF.setFontSize(11);
+    docPDF.text("Terms & Conditions", 40, y);
+    y += 14;
+    docPDF.setFont("helvetica", "normal");
+    docPDF.setFontSize(10);
+    y = writeParagraph(
+      docPDF,
+      "This estimate is valid for 30 days from the date above. Prices may vary if scope changes. Payment terms: due upon completion unless otherwise agreed. A deposit may be required for material purchases.",
+      40, y, W - 80
+    );
+    y += 20;
+
+    // Signatures
+    if (clientSigData || contractorSigData) {
+      docPDF.setFont("helvetica", "bold");
+      docPDF.setFontSize(11);
+      docPDF.text("Signatures", 40, y);
+      y += 16;
+
+      const sigBoxH = 70;
+      const col1X = 40;
+      const col2X = W / 2 + 10;
+      const boxW = W / 2 - 50;
+
+      docPDF.setDrawColor(120);
+      docPDF.rect(col1X, y, boxW, sigBoxH);
+      docPDF.rect(col2X, y, boxW, sigBoxH);
+
+      if (clientSigData) {
+        try {
+          docPDF.addImage(clientSigData, "PNG", col1X + 4, y + 4, boxW - 8, sigBoxH - 8);
+        } catch (e) {}
+      }
+      if (contractorSigData) {
+        try {
+          docPDF.addImage(contractorSigData, "PNG", col2X + 4, y + 4, boxW - 8, sigBoxH - 8);
+        } catch (e) {}
+      }
+
+      y += sigBoxH + 14;
+      docPDF.setFont("helvetica", "bold");
+      docPDF.setFontSize(9);
+      docPDF.text("Client Signature", col1X, y);
+      docPDF.text("Contractor Signature", col2X, y);
+      y += 12;
+      docPDF.setFont("helvetica", "normal");
+      docPDF.text(clientSignedAt ? `Signed: ${clientSignedAt}` : "Not signed", col1X, y);
+      docPDF.text(contractorSignedAt ? `Signed: ${contractorSignedAt}` : "Not signed", col2X, y);
+    }
+
+    // Footer
+    docPDF.setFontSize(9);
+    docPDF.setTextColor(100);
+    docPDF.text(
+      "Thank you for considering Kings Canyon Landscaping. We appreciate your business.",
+      W / 2, H - 36, { align: "center" }
+    );
+
+    return docPDF;
+  };
+
+  // Download PDF
+  const handleGeneratePDF = () => {
+    try {
+      const docPDF = buildBidPDF();
+      if (!docPDF) return;
+
+      const filenameSafe = (bid.customerName || "Bid").replace(/[^\w\- ]+/g, "_").replace(/\s+/g, "_");
+      const filename = `${filenameSafe}_Estimate_${id.slice(-8)}.pdf`;
+      docPDF.save(filename);
+
+      Swal.fire({
+        icon: "success",
+        title: "PDF Downloaded!",
+        text: `Estimate saved as ${filename}`,
+        timer: 2000,
+        showConfirmButton: false,
+      });
+    } catch (error) {
+      console.error("Error generating PDF:", error);
+      Swal.fire("Error", "Failed to generate PDF.", "error");
+    }
+  };
+
+  // ✅ EMAIL BID TO CUSTOMER
+  const handleEmailToCustomer = async () => {
+    let emailToSend = customerEmail;
+    
+    if (!emailToSend) {
+      const { value: enteredEmail } = await Swal.fire({
+        title: 'Customer Email',
+        input: 'email',
+        inputLabel: `Enter email for ${bid.customerName}`,
+        inputPlaceholder: 'customer@email.com',
+        showCancelButton: true,
+        confirmButtonText: 'Send',
+        validationMessage: 'Please enter a valid email address',
+      });
+      
+      if (!enteredEmail) return;
+      emailToSend = enteredEmail;
+      setCustomerEmail(enteredEmail);
+      
+      try {
+        await updateDoc(doc(db, "bids", id), { customerEmail: enteredEmail });
+      } catch (e) {
+        console.error("Error saving customer email:", e);
+      }
+    }
+    
+    const confirm = await Swal.fire({
+      title: 'Email Estimate',
+      html: `Send estimate PDF to:<br/><strong>${bid.customerName}</strong><br/>${emailToSend}`,
+      icon: 'question',
+      showCancelButton: true,
+      confirmButtonText: 'Send Email',
+      confirmButtonColor: '#1565c0',
+    });
+    
+    if (!confirm.isConfirmed) return;
+    
+    setSending(true);
+    try {
+      const docPDF = buildBidPDF();
+      if (!docPDF) throw new Error("Failed to generate PDF");
+      
+      const pdfBase64 = docPDF.output('datauristring').split(',')[1];
+      
+      await sendBidEmail(
+        emailToSend,
+        bid.customerName,
+        { ...bid, id },
+        pdfBase64
+      );
+      
+      // Update bid status
+      await updateDoc(doc(db, "bids", id), {
+        status: "Sent",
+        emailSentAt: new Date().toISOString(),
+        emailSentTo: emailToSend,
+      });
+      setBid({ ...bid, status: "Sent" });
+      
+      Swal.fire({
+        icon: 'success',
+        title: 'Email Sent!',
+        html: `Estimate sent to <strong>${emailToSend}</strong>`,
+        timer: 3000,
+        showConfirmButton: false,
+      });
+      
+    } catch (error) {
+      console.error("Error sending email:", error);
+      Swal.fire({
+        icon: 'error',
+        title: 'Email Failed',
+        text: error.message || 'Could not send email. Check Gmail settings.',
+      });
+    } finally {
+      setSending(false);
+    }
   };
 
   if (loading) {
@@ -570,6 +901,20 @@ export default function BidEditor() {
             </Alert>
           )}
 
+          {/* Customer Email Info */}
+          {customerEmail && (
+            <Alert severity="info">
+              Customer email on file: <strong>{customerEmail}</strong>
+            </Alert>
+          )}
+
+          {/* Email sent status */}
+          {bid.emailSentAt && (
+            <Alert severity="success" icon={<EmailIcon />}>
+              Estimate emailed to <strong>{bid.emailSentTo}</strong> on {new Date(bid.emailSentAt).toLocaleString()}
+            </Alert>
+          )}
+
           <Divider sx={{ my: 2 }} />
 
           <Box sx={{ display: "flex", gap: 2, mt: 2, flexDirection: { xs: 'column', sm: 'row' } }}>
@@ -584,6 +929,26 @@ export default function BidEditor() {
               {saving ? "Saving..." : "Save Changes"}
             </Button>
             <Button 
+              variant="contained"
+              color="success"
+              onClick={handleEmailToCustomer}
+              disabled={sending}
+              size="large"
+              startIcon={<EmailIcon />}
+              fullWidth
+            >
+              {sending ? "Sending..." : "Email to Customer"}
+            </Button>
+            <Button 
+              variant="outlined"
+              color="primary"
+              onClick={handleGeneratePDF}
+              size="large"
+              fullWidth
+            >
+              Download PDF
+            </Button>
+            <Button 
               variant="outlined" 
               color="inherit" 
               onClick={() => navigate("/bids")}
@@ -591,16 +956,6 @@ export default function BidEditor() {
               fullWidth
             >
               Cancel
-            </Button>
-            <Button 
-              variant="outlined"
-              color="primary"
-              onClick={handleSendForSignature}
-              size="large"
-              startIcon={<LinkIcon />}
-              fullWidth
-            >
-              Send for Signature
             </Button>
           </Box>
         </Box>

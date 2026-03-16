@@ -100,17 +100,34 @@ async function sendPushoverNotification({
 /**
  * Notify admin when a crew member clocks IN
  */
-export async function notifyCrewClockIn(employeeName, location = null) {
+export async function notifyCrewClockIn(employeeName, location = null, gpsData = null) {
   const time = new Date().toLocaleTimeString("en-US", {
     hour: "numeric",
     minute: "2-digit",
     hour12: true,
   });
 
+  let gpsLine = "";
+  if (gpsData && gpsData.gpsDistanceFeet != null) {
+    const feet = gpsData.gpsDistanceFeet;
+    const miles = gpsData.gpsDistanceMiles;
+    const onSite = feet <= 500;
+    gpsLine = onSite
+      ? `\n✅ ON SITE - ${feet} ft from job (${miles} mi)`
+      : `\n⚠️ OFF SITE - ${feet.toLocaleString()} ft away (${miles} mi)`;
+    if (gpsData.jobAddress) {
+      gpsLine += `\n📍 ${gpsData.jobAddress}`;
+    }
+  } else if (gpsData && gpsData.jobAddress) {
+    gpsLine = `\n⚠️ GPS unavailable\n📍 ${gpsData.jobAddress}`;
+  } else {
+    gpsLine = location ? `\n📍 ${location}` : "\n⚠️ No GPS data";
+  }
+
   return sendPushoverNotification({
     type: "clock_in",
     title: "🟢 Crew Clocked In",
-    message: `${employeeName} clocked in at ${time}${location ? `\n📍 ${location}` : ""}`,
+    message: `${employeeName} clocked in at ${time}${gpsLine}`,
     priority: PRIORITY.NORMAL,
     sound: "cashregister",
   });
@@ -119,7 +136,7 @@ export async function notifyCrewClockIn(employeeName, location = null) {
 /**
  * Notify admin when a crew member clocks OUT
  */
-export async function notifyCrewClockOut(employeeName, hoursWorked = null) {
+export async function notifyCrewClockOut(employeeName, hoursWorked = null, gpsData = null) {
   const time = new Date().toLocaleTimeString("en-US", {
     hour: "numeric",
     minute: "2-digit",
@@ -128,11 +145,69 @@ export async function notifyCrewClockOut(employeeName, hoursWorked = null) {
 
   const hoursText = hoursWorked ? `\n⏱ Hours worked: ${hoursWorked}` : "";
 
+  let gpsLine = "";
+  if (gpsData && gpsData.gpsDistanceFeet != null) {
+    const feet = gpsData.gpsDistanceFeet;
+    const miles = gpsData.gpsDistanceMiles;
+    const onSite = feet <= 500;
+    gpsLine = onSite
+      ? `\n✅ ON SITE - ${feet} ft from job (${miles} mi)`
+      : `\n⚠️ OFF SITE - ${feet.toLocaleString()} ft away (${miles} mi)`;
+    if (gpsData.jobAddress) {
+      gpsLine += `\n📍 ${gpsData.jobAddress}`;
+    }
+  } else if (gpsData && gpsData.jobAddress) {
+    gpsLine = `\n⚠️ GPS unavailable\n📍 ${gpsData.jobAddress}`;
+  }
+
   return sendPushoverNotification({
     type: "clock_out",
     title: "🔴 Crew Clocked Out",
-    message: `${employeeName} clocked out at ${time}${hoursText}`,
+    message: `${employeeName} clocked out at ${time}${hoursText}${gpsLine}`,
     priority: PRIORITY.NORMAL,
+  });
+}
+
+/**
+ * Notify admin when a crew member clocks OUT far from the job site
+ */
+export async function notifyFailedClockOut(employeeName, jobName, distanceFeet, distanceMiles, jobAddress = null, hoursWorked = null) {
+  const time = new Date().toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
+
+  const addressText = jobAddress ? `\n📍 ${jobAddress}` : "";
+  const hoursText = hoursWorked ? `\n⏱ Hours worked: ${hoursWorked}` : "";
+
+  return sendPushoverNotification({
+    type: "off_site_clock_out",
+    title: "⚠️ Off-Site Clock-Out",
+    message: `${employeeName} clocked out at ${time}\n🔧 Job: ${jobName}\n📏 ${distanceFeet.toLocaleString()} ft away (${distanceMiles} mi) — NOT on site${hoursText}${addressText}`,
+    priority: PRIORITY.HIGH,
+    sound: "siren",
+  });
+}
+
+/**
+ * Notify admin when a crew member is BLOCKED from clocking in (too far from job site)
+ */
+export async function notifyFailedClockIn(employeeName, jobName, distanceFeet, distanceMiles, jobAddress = null) {
+  const time = new Date().toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
+
+  const addressText = jobAddress ? `\n📍 ${jobAddress}` : "";
+
+  return sendPushoverNotification({
+    type: "failed_clock_in",
+    title: "⛔ Failed Clock-In Attempt",
+    message: `${employeeName} tried to clock in at ${time}\n🔧 Job: ${jobName}\n📏 ${distanceFeet.toLocaleString()} ft away (${distanceMiles} mi) — BLOCKED${addressText}\nRequired: within 500 ft`,
+    priority: PRIORITY.HIGH,
+    sound: "siren",
   });
 }
 
@@ -424,6 +499,20 @@ export async function sendTestNotification() {
     title: "🦁 KCL Manager",
     message: "Push notifications are working! Kings Canyon Landscaping is ready to roll. 🌵",
     priority: PRIORITY.NORMAL,
+    sound: "cashregister",
+  });
+}
+
+/**
+ * Notify when a bid appointment is scheduled
+ */
+export async function notifyBidAppointmentScheduled(customerName, date, time, address = null) {
+  const addressText = address ? `\n📍 ${address}` : "";
+  return sendPushoverNotification({
+    type: "bid_appointment",
+    title: "📅 Bid Appointment Scheduled",
+    message: `New bid appointment!\n👤 ${customerName}\n📅 ${date} at ${time}${addressText}`,
+    priority: PRIORITY.HIGH,
     sound: "cashregister",
   });
 }

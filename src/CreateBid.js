@@ -18,12 +18,14 @@ import {
   useMediaQuery,
   useTheme,
   Autocomplete,
-  Divider,
+  Alert,
 } from "@mui/material";
 import Swal from "sweetalert2";
 import { useNavigate } from "react-router-dom";
 import DesignVisualizer from "./components/DesignVisualizer";
 import BrushIcon from "@mui/icons-material/Brush";
+import PersonAddIcon from "@mui/icons-material/PersonAdd";
+import WarningAmberIcon from "@mui/icons-material/WarningAmber";
 
 export default function CreateBid() {
   const theme = useTheme();
@@ -34,11 +36,7 @@ export default function CreateBid() {
   const [customers, setCustomers] = useState([]);
   const [selectedCustomer, setSelectedCustomer] = useState(null);
 
-  // Form state
-  const [customerName, setCustomerName] = useState("");
-  const [customerEmail, setCustomerEmail] = useState("");
-  const [customerPhone, setCustomerPhone] = useState("");
-  const [customerAddress, setCustomerAddress] = useState("");
+  // Form state — all populated from selected customer, not freehand
   const [amount, setAmount] = useState("");
   const [description, setDescription] = useState("");
   const [materials, setMaterials] = useState("");
@@ -49,7 +47,7 @@ export default function CreateBid() {
   const [showDesignDialog, setShowDesignDialog] = useState(false);
   const [showDesignVisualizer, setShowDesignVisualizer] = useState(false);
 
-  // Fetch customers for dropdown
+  // Fetch customers for dropdown — only show customers with email AND address
   useEffect(() => {
     const fetchCustomers = async () => {
       try {
@@ -58,6 +56,8 @@ export default function CreateBid() {
           id: d.id,
           ...d.data(),
         }));
+        // Sort by name
+        data.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
         setCustomers(data);
       } catch (error) {
         console.error("Error fetching customers:", error);
@@ -66,27 +66,81 @@ export default function CreateBid() {
     fetchCustomers();
   }, []);
 
-  // Auto-fill when customer selected
+  // Handle customer selection
   const handleCustomerSelect = (event, value) => {
     setSelectedCustomer(value);
-    if (value) {
-      setCustomerName(value.name || "");
-      setCustomerEmail(value.email || "");
-      setCustomerPhone(value.phone || "");
-      setCustomerAddress(value.address || "");
-    } else {
-      setCustomerName("");
-      setCustomerEmail("");
-      setCustomerPhone("");
-      setCustomerAddress("");
-    }
   };
 
   const handleContinueToSave = () => {
-    if (!customerName || !amount) {
-      Swal.fire("Missing info", "Customer Name and Amount are required.", "warning");
+    // Gate 1 — must select an existing customer
+    if (!selectedCustomer) {
+      Swal.fire({
+        icon: "warning",
+        title: "Select a Customer First",
+        html: `You must select an existing customer before creating a bid.<br/><br/>
+               If this is a new customer, <strong>add them to the Customers list first</strong> 
+               so their address, email, and contact info are on file.`,
+        confirmButtonText: "Go to Customers",
+        showCancelButton: true,
+        cancelButtonText: "Stay Here",
+      }).then((result) => {
+        if (result.isConfirmed) navigate("/customers");
+      });
       return;
     }
+
+    // Gate 2 — customer must have an email address
+    if (!selectedCustomer.email) {
+      Swal.fire({
+        icon: "warning",
+        title: "Customer Missing Email",
+        html: `<strong>${selectedCustomer.name}</strong> doesn't have an email address on file.<br/><br/>
+               An email is required to send the bid for electronic signing.<br/><br/>
+               Please update their customer record first.`,
+        confirmButtonText: "Edit Customer",
+        showCancelButton: true,
+        cancelButtonText: "Cancel",
+      }).then((result) => {
+        if (result.isConfirmed) navigate(`/customer-edit/${selectedCustomer.id}`);
+      });
+      return;
+    }
+
+    // Gate 3 — customer must have an address
+    if (!selectedCustomer.address) {
+      Swal.fire({
+        icon: "warning",
+        title: "Customer Missing Address",
+        html: `<strong>${selectedCustomer.name}</strong> doesn't have an address on file.<br/><br/>
+               An address is required for scheduling and GPS check-in enforcement.<br/><br/>
+               Please update their customer record first.`,
+        confirmButtonText: "Edit Customer",
+        showCancelButton: true,
+        cancelButtonText: "Cancel",
+      }).then((result) => {
+        if (result.isConfirmed) navigate(`/customer-edit/${selectedCustomer.id}`);
+      });
+      return;
+    }
+
+    // Gate 4 — amount is required
+    if (!amount) {
+      Swal.fire("Missing Info", "Please enter a bid amount.", "warning");
+      return;
+    }
+
+    // Gate 5 — description is required
+    if (!description || !description.trim()) {
+      Swal.fire({
+        icon: "warning",
+        title: "Description Required",
+        html: `Please describe the work to be done.<br/><br/>
+               <small>This appears on the bid document and helps your crew know what the job is.</small>`,
+        confirmButtonText: "OK",
+      });
+      return;
+    }
+
     setShowDesignDialog(true);
   };
 
@@ -113,30 +167,12 @@ export default function CreateBid() {
 
   const saveBidWithoutDesign = async () => {
     try {
-      let customerId = selectedCustomer?.id;
-
-      if (!customerId) {
-        const customerData = {
-          name: customerName,
-          email: customerEmail || "",
-          phone: customerPhone || "",
-          address: customerAddress || "",
-          createdAt: new Date().toISOString(),
-          lifetimeValue: 0,
-          bidCount: 1,
-          contractCount: 0,
-          invoiceCount: 0,
-        };
-        const customerRef = await addDoc(collection(db, "customers"), customerData);
-        customerId = customerRef.id;
-      }
-
       await addDoc(collection(db, "bids"), {
-        customerId,
-        customerName,
-        customerEmail: customerEmail || "",
-        customerPhone: customerPhone || "",
-        customerAddress: customerAddress || "",
+        customerId: selectedCustomer.id,
+        customerName: selectedCustomer.name,
+        customerEmail: selectedCustomer.email || "",
+        customerPhone: selectedCustomer.phone || "",
+        customerAddress: selectedCustomer.address || "",
         amount: parseFloat(amount),
         description: description || "",
         materials: materials || "",
@@ -157,30 +193,12 @@ export default function CreateBid() {
 
   const saveBidWithDesign = async (design) => {
     try {
-      let customerId = selectedCustomer?.id;
-
-      if (!customerId) {
-        const customerData = {
-          name: customerName,
-          email: customerEmail || "",
-          phone: customerPhone || "",
-          address: customerAddress || "",
-          createdAt: new Date().toISOString(),
-          lifetimeValue: 0,
-          bidCount: 1,
-          contractCount: 0,
-          invoiceCount: 0,
-        };
-        const customerRef = await addDoc(collection(db, "customers"), customerData);
-        customerId = customerRef.id;
-      }
-
       await addDoc(collection(db, "bids"), {
-        customerId,
-        customerName,
-        customerEmail: customerEmail || "",
-        customerPhone: customerPhone || "",
-        customerAddress: customerAddress || "",
+        customerId: selectedCustomer.id,
+        customerName: selectedCustomer.name,
+        customerEmail: selectedCustomer.email || "",
+        customerPhone: selectedCustomer.phone || "",
+        customerAddress: selectedCustomer.address || "",
         amount: parseFloat(amount),
         description: description || "",
         materials: materials || "",
@@ -202,10 +220,6 @@ export default function CreateBid() {
 
   const resetForm = () => {
     setSelectedCustomer(null);
-    setCustomerName("");
-    setCustomerEmail("");
-    setCustomerPhone("");
-    setCustomerAddress("");
     setAmount("");
     setDescription("");
     setMaterials("");
@@ -216,7 +230,7 @@ export default function CreateBid() {
   if (showDesignVisualizer) {
     return (
       <DesignVisualizer
-        customerName={customerName}
+        customerName={selectedCustomer?.name || ""}
         onSave={handleDesignSaved}
         onCancel={handleCancelDesign}
       />
@@ -225,90 +239,113 @@ export default function CreateBid() {
 
   return (
     <Container sx={{ mt: { xs: 2, sm: 4 }, pb: { xs: 4, sm: 8 }, px: { xs: 2, sm: 3 } }}>
-      <Paper
-        elevation={2}
-        sx={{
-          p: { xs: 2, sm: 3 },
-          borderRadius: 2,
-        }}
-      >
+      <Paper elevation={2} sx={{ p: { xs: 2, sm: 3 }, borderRadius: 2 }}>
         <Typography
           variant="h5"
           gutterBottom
-          sx={{
-            fontSize: { xs: "1.5rem", sm: "2rem" },
-            mb: 3,
-          }}
+          sx={{ fontSize: { xs: "1.5rem", sm: "2rem" }, mb: 3 }}
         >
           Create New Bid
         </Typography>
 
         <Box>
-          {/* Customer Selection */}
+          {/* Customer Selection — REQUIRED, no freehand entry */}
           <Typography variant="subtitle1" sx={{ mb: 1, fontWeight: "bold" }}>
-            Customer Information
+            Customer *
           </Typography>
+
+          <Alert severity="info" sx={{ mb: 2 }}>
+            Select an existing customer. If this is a new customer,{" "}
+            <strong
+              style={{ cursor: "pointer", textDecoration: "underline" }}
+              onClick={() => navigate("/customer-edit/new")}
+            >
+              add them to Customers first
+            </strong>
+            .
+          </Alert>
 
           <Autocomplete
             options={customers}
-            getOptionLabel={(option) => option.name}
+            getOptionLabel={(option) => `${option.name}${option.phone ? ` — ${option.phone}` : ""}`}
             value={selectedCustomer}
             onChange={handleCustomerSelect}
             renderInput={(params) => (
               <TextField
                 {...params}
-                label="Select Existing Customer (Optional)"
-                helperText="Choose a customer to auto-fill their info, or enter new customer below"
+                label="Search Customers *"
+                helperText="Type a name or phone number to search"
+                required
               />
             )}
             sx={{ mb: 2 }}
           />
 
-          <Divider sx={{ mb: 2 }}>
-            <Typography variant="caption" color="text.secondary">
-              OR ENTER NEW CUSTOMER
-            </Typography>
-          </Divider>
+          {/* Show customer info once selected */}
+          {selectedCustomer && (
+            <Paper
+              sx={{
+                p: 2,
+                mb: 3,
+                bgcolor: selectedCustomer.email && selectedCustomer.address ? "#e8f5e9" : "#fff8e1",
+                border: "1px solid",
+                borderColor: selectedCustomer.email && selectedCustomer.address ? "#a5d6a7" : "#ffe082",
+              }}
+            >
+              <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 0.5 }}>
+                {selectedCustomer.name}
+              </Typography>
+              {selectedCustomer.phone && (
+                <Typography variant="body2">📞 {selectedCustomer.phone}</Typography>
+              )}
+              {selectedCustomer.address && (
+                <Typography variant="body2">📍 {selectedCustomer.address}</Typography>
+              )}
+              {selectedCustomer.email ? (
+                <Typography variant="body2">✉️ {selectedCustomer.email}</Typography>
+              ) : (
+                <Box sx={{ display: "flex", alignItems: "center", gap: 1, mt: 1 }}>
+                  <WarningAmberIcon color="warning" fontSize="small" />
+                  <Typography variant="body2" color="warning.dark">
+                    No email on file — required for signing.{" "}
+                    <strong
+                      style={{ cursor: "pointer", textDecoration: "underline" }}
+                      onClick={() => navigate(`/customer-edit/${selectedCustomer.id}`)}
+                    >
+                      Edit Customer
+                    </strong>
+                  </Typography>
+                </Box>
+              )}
+              {!selectedCustomer.address && (
+                <Box sx={{ display: "flex", alignItems: "center", gap: 1, mt: 1 }}>
+                  <WarningAmberIcon color="warning" fontSize="small" />
+                  <Typography variant="body2" color="warning.dark">
+                    No address on file — required for GPS scheduling.{" "}
+                    <strong
+                      style={{ cursor: "pointer", textDecoration: "underline" }}
+                      onClick={() => navigate(`/customer-edit/${selectedCustomer.id}`)}
+                    >
+                      Edit Customer
+                    </strong>
+                  </Typography>
+                </Box>
+              )}
+            </Paper>
+          )}
 
-          <TextField
-            label="Customer Name *"
-            fullWidth
-            margin="normal"
-            value={customerName}
-            onChange={(e) => setCustomerName(e.target.value)}
-            required
-            sx={{ mb: 2 }}
-          />
-
-          <TextField
-            label="Customer Email"
-            type="email"
-            fullWidth
-            margin="normal"
-            value={customerEmail}
-            onChange={(e) => setCustomerEmail(e.target.value)}
-            sx={{ mb: 2 }}
-          />
-
-          <TextField
-            label="Customer Phone"
-            fullWidth
-            margin="normal"
-            value={customerPhone}
-            onChange={(e) => setCustomerPhone(e.target.value)}
-            sx={{ mb: 2 }}
-          />
-
-          <TextField
-            label="Customer Address"
-            fullWidth
-            margin="normal"
-            value={customerAddress}
-            onChange={(e) => setCustomerAddress(e.target.value)}
-            sx={{ mb: 3 }}
-          />
-
-          <Divider sx={{ my: 3 }} />
+          {/* No customer selected — prompt to add one */}
+          {!selectedCustomer && (
+            <Box sx={{ mb: 3, textAlign: "center" }}>
+              <Button
+                variant="outlined"
+                startIcon={<PersonAddIcon />}
+                onClick={() => navigate("/customer-edit/new")}
+              >
+                Add New Customer
+              </Button>
+            </Box>
+          )}
 
           {/* Bid Details */}
           <Typography variant="subtitle1" sx={{ mb: 1, fontWeight: "bold" }}>
@@ -335,6 +372,7 @@ export default function CreateBid() {
             margin="normal"
             value={description}
             onChange={(e) => setDescription(e.target.value)}
+            placeholder="Describe the work to be done..."
             sx={{ mb: 2 }}
           />
 
@@ -344,6 +382,7 @@ export default function CreateBid() {
             margin="normal"
             value={materials}
             onChange={(e) => setMaterials(e.target.value)}
+            placeholder="List materials needed..."
             sx={{ mb: 2 }}
           />
 
@@ -355,6 +394,7 @@ export default function CreateBid() {
             margin="normal"
             value={notes}
             onChange={(e) => setNotes(e.target.value)}
+            placeholder="Internal notes..."
             sx={{ mb: 3 }}
           />
 
@@ -364,10 +404,7 @@ export default function CreateBid() {
             onClick={handleContinueToSave}
             fullWidth
             size="large"
-            sx={{
-              py: 1.5,
-              fontSize: { xs: "1rem", sm: "1.1rem" },
-            }}
+            sx={{ py: 1.5, fontSize: { xs: "1rem", sm: "1.1rem" } }}
           >
             Continue to Save
           </Button>
@@ -394,55 +431,29 @@ export default function CreateBid() {
                   Show Your Customer What They're Getting!
                 </Typography>
               </Box>
-
-              <Typography variant="body2" sx={{ mb: 2 }}>
-                Take a photo of the jobsite and place design elements on it:
-              </Typography>
-
-              <Box component="ul" sx={{ pl: 2, mb: 2 }}>
-                <li>
-                  <Typography variant="body2">Pools, patios, fire pits</Typography>
-                </li>
-                <li>
-                  <Typography variant="body2">Lighting, structures, landscaping</Typography>
-                </li>
-                <li>
-                  <Typography variant="body2">50+ professional design elements</Typography>
-                </li>
-              </Box>
-
-              <Typography variant="body2" color="primary" fontWeight="bold">
-                Result: Higher close rates & happier customers!
-              </Typography>
-            </CardContent>
-          </Card>
-
-          <Card sx={{ bgcolor: "#fff3e0" }}>
-            <CardContent>
-              <Typography variant="subtitle2" gutterBottom>
-                ⚡ Quick Bid (No Design)
-              </Typography>
-              <Typography variant="body2">
-                Skip visualization for small jobs or maintenance work
+              <Typography variant="body2" color="text.secondary">
+                Add a visual design overlay to your bid using our Design Visualizer.
+                Upload a photo of the customer's property and sketch out the plan.
               </Typography>
             </CardContent>
           </Card>
         </DialogContent>
-        <DialogActions sx={{ p: 2, flexDirection: "column", gap: 1 }}>
+        <DialogActions sx={{ flexDirection: isMobile ? "column" : "row", p: 2, gap: 1 }}>
+          <Button
+            variant="outlined"
+            onClick={handleSkipDesign}
+            fullWidth={isMobile}
+          >
+            Skip — Save Bid Without Design
+          </Button>
           <Button
             variant="contained"
             color="primary"
-            fullWidth
-            startIcon={<BrushIcon />}
             onClick={handleAddDesign}
+            startIcon={<BrushIcon />}
+            fullWidth={isMobile}
           >
-            Yes, Add Design
-          </Button>
-          <Button variant="outlined" fullWidth onClick={handleSkipDesign}>
-            Skip for Now
-          </Button>
-          <Button variant="text" fullWidth onClick={() => setShowDesignDialog(false)}>
-            Go Back
+            Add Design Visualization
           </Button>
         </DialogActions>
       </Dialog>

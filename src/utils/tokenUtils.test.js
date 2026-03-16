@@ -24,7 +24,7 @@ describe('tokenUtils', () => {
   describe('generateSigningUrl', () => {
     it('should generate correct bid signing URL', () => {
       const url = generateSigningUrl('https://example.com', 'bid', 'bid123', 'token456');
-      expect(url).toBe('https://example.com/sign-bid/bid123?token=token456');
+      expect(url).toBe('https://example.com/public/sign-bid/bid123?token=token456');
     });
 
     it('should generate correct contract signing URL', () => {

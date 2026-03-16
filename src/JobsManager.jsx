@@ -29,6 +29,10 @@ import {
   IconButton,
   Checkbox,
   ListItemText,
+  Accordion,
+  AccordionSummary,
+  AccordionDetails,
+  Badge,
 } from "@mui/material";
 import CameraAltIcon from "@mui/icons-material/CameraAlt";
 import CloseIcon from "@mui/icons-material/Close";
@@ -36,11 +40,10 @@ import PhotoLibraryIcon from "@mui/icons-material/PhotoLibrary";
 import EditIcon from "@mui/icons-material/Edit";
 import SortIcon from "@mui/icons-material/Sort";
 import FilterListIcon from "@mui/icons-material/FilterList";
-import DownloadIcon from "@mui/icons-material/Download";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
+import PersonIcon from "@mui/icons-material/Person";
 import Swal from "sweetalert2";
-import { notifyJobCompleted, notifyJobScheduled } from "./pushoverNotificationService";
 import { markAsViewed } from './useNotificationCounts';
-import { exportJobsToExcel } from './utils/exportUtils';
 
 export default function JobsManager() {
   const [jobs, setJobs] = useState([]);
@@ -49,6 +52,7 @@ export default function JobsManager() {
   const [sortOrder, setSortOrder] = useState("newest");
   const [jobTypeFilter, setJobTypeFilter] = useState("all");
   const [loading, setLoading] = useState(true);
+  const [expandedClients, setExpandedClients] = useState({}); // tracks which client groups are open
   const [cameraOpen, setCameraOpen] = useState(false);
   const [currentJob, setCurrentJob] = useState(null);
   const [photoType, setPhotoType] = useState("");
@@ -309,19 +313,6 @@ export default function JobsManager() {
           job.id === editingJob.id ? { ...job, ...editForm } : job
         )
       );
-      // Notify if job was just marked completed
-      if (
-        editForm.status === "Completed" &&
-        editingJob.status !== "Completed"
-      ) {
-        try {
-          await notifyJobCompleted(
-            editForm.clientName || editingJob.clientName || "Customer",
-            editForm.jobDescription || editingJob.jobDescription || "Job",
-            editForm.amount || editingJob.amount || 0
-          );
-        } catch (e) { console.error("Pushover error:", e); }
-      }
       Swal.fire("Updated!", "Job details have been saved.", "success");
       handleCloseEditDialog();
     } catch (error) {
@@ -615,212 +606,182 @@ export default function JobsManager() {
               <MenuItem value="status-pending">Pending First</MenuItem>
             </Select>
           </FormControl>
-
-          <Button
-            variant="outlined"
-            startIcon={<DownloadIcon />}
-            onClick={() => exportJobsToExcel(sortedJobs)}
-          >
-            Export Excel
-          </Button>
         </Box>
       </Box>
 
-      <Box
-        sx={{
-          display: "grid",
-          gridTemplateColumns: { 
-            xs: "1fr", 
-            sm: "repeat(auto-fit, minmax(300px, 1fr))" 
-          },
-          gap: { xs: 2, sm: 3 },
-          mt: 2,
-        }}
-      >
-        {sortedJobs.map((job) => (
-          <Card key={job.id} sx={{ boxShadow: 2 }}>
-            <CardContent>
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', mb: 2 }}>
-                <Typography variant="h6" sx={{ fontSize: '1.1rem' }}>
-                  {job.clientName}
-                </Typography>
-                <Chip
-                  label={job.status || "Pending"}
-                  color={getStatusColor(job.status)}
-                  size="small"
-                />
-              </Box>
+      {/* ============ GROUPED BY CLIENT ============ */}
+      {sortedJobs.length === 0 ? (
+        <Box sx={{ textAlign: 'center', py: 8 }}>
+          <Typography variant="h6" color="text.secondary">No Jobs Found</Typography>
+          <Typography variant="body2" color="text.secondary">
+            {jobTypeFilter !== "all"
+              ? `No ${jobTypeFilter} jobs found. Try changing the filter.`
+              : "Jobs will appear here after you create them"}
+          </Typography>
+        </Box>
+      ) : (() => {
+        // Group jobs by clientName, sorted by client name A-Z
+        const groups = sortedJobs.reduce((acc, job) => {
+          const key = job.clientName || "Unknown Client";
+          if (!acc[key]) acc[key] = [];
+          acc[key].push(job);
+          return acc;
+        }, {});
 
-              {/* ✅ NEW: Job Type Dropdown */}
-              <FormControl fullWidth sx={{ mb: 2 }}>
-                <InputLabel size="small">Job Type</InputLabel>
-                <Select
-                  size="small"
-                  value={job.jobType || "General Service"}
-                  label="Job Type"
-                  onChange={(e) => handleJobTypeChange(job.id, e.target.value)}
+        return Object.entries(groups)
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([clientName, clientJobs]) => {
+            const isExpanded = expandedClients[clientName] !== false; // default open
+            const hasMultiple = clientJobs.length > 1;
+            const activeCount = clientJobs.filter(j => j.status === "Active").length;
+            const pendingCount = clientJobs.filter(j => j.status === "Pending").length;
+
+            return (
+              <Accordion
+                key={clientName}
+                expanded={isExpanded}
+                onChange={() => setExpandedClients(prev => ({ ...prev, [clientName]: !isExpanded }))}
+                sx={{ mb: 1.5, boxShadow: 2, borderRadius: '8px !important', '&:before': { display: 'none' } }}
+              >
+                <AccordionSummary
+                  expandIcon={<ExpandMoreIcon />}
+                  sx={{ backgroundColor: '#f5f5f5', borderRadius: '8px', minHeight: 56 }}
                 >
-                  <MenuItem value="Quick Weed Service">Quick Weed Service</MenuItem>
-                  <MenuItem value="Maintenance">Maintenance</MenuItem>
-                  <MenuItem value="General Service">General Service</MenuItem>
-                </Select>
-              </FormControl>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, width: '100%', pr: 1 }}>
+                    <PersonIcon color="primary" />
+                    <Typography variant="h6" sx={{ fontSize: '1rem', fontWeight: 700, flex: 1 }}>
+                      {clientName}
+                    </Typography>
+                    <Badge badgeContent={clientJobs.length} color="primary" sx={{ mr: 1 }}>
+                      <Chip label={`${clientJobs.length} job${clientJobs.length > 1 ? 's' : ''}`} size="small" />
+                    </Badge>
+                    {activeCount > 0 && <Chip label={`${activeCount} Active`} size="small" color="success" />}
+                    {pendingCount > 0 && <Chip label={`${pendingCount} Pending`} size="small" color="warning" />}
+                  </Box>
+                </AccordionSummary>
 
-              <FormControl fullWidth sx={{ mb: 2 }}>
-                <InputLabel size="small">Change Status</InputLabel>
-                <Select
-                  size="small"
-                  value={job.status || "Pending"}
-                  label="Change Status"
-                  onChange={(e) =>
-                    handleStatusChange(job.id, e.target.value)
-                  }
-                >
-                  <MenuItem value="Active">Active</MenuItem>
-                  <MenuItem value="Pending">Pending</MenuItem>
-                  <MenuItem value="Completed">Completed</MenuItem>
-                  <MenuItem value="Cancelled">Cancelled</MenuItem>
-                </Select>
-              </FormControl>
+                <AccordionDetails sx={{ p: 2 }}>
+                  <Box sx={{
+                    display: "grid",
+                    gridTemplateColumns: { xs: "1fr", sm: "repeat(auto-fit, minmax(300px, 1fr))" },
+                    gap: 2,
+                  }}>
+                    {clientJobs.map((job, jobIndex) => {
+                      // Job number label — only show # if client has multiple jobs
+                      const jobLabel = hasMultiple
+                        ? `Job #${jobIndex + 1} — ${(() => {
+                            const raw = job.serviceDate || job.startDate || job.createdAt;
+                            if (!raw) return "No date";
+                            try {
+                              const d = raw?.toDate ? raw.toDate() : new Date(raw);
+                              return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+                            } catch { return "No date"; }
+                          })()}`
+                        : null;
 
-              {job.notes && (
-                <TextField
-                  fullWidth
-                  multiline
-                  minRows={2}
-                  label="Job Notes"
-                  value={job.notes || ""}
-                  disabled
-                  size="small"
-                  sx={{ mb: 2 }}
-                />
-              )}
+                      return (
+                        <Card key={job.id} sx={{ boxShadow: 1, border: hasMultiple ? '1px solid #e0e0e0' : 'none' }}>
+                          <CardContent>
+                            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', mb: 1.5 }}>
+                              <Box>
+                                {jobLabel && (
+                                  <Typography variant="caption" color="primary" fontWeight="bold" display="block">
+                                    {jobLabel}
+                                  </Typography>
+                                )}
+                                <Typography variant="body1" fontWeight="bold">
+                                  {job.jobType || "General Service"}
+                                </Typography>
+                              </Box>
+                              <Chip label={job.status || "Pending"} color={getStatusColor(job.status)} size="small" />
+                            </Box>
 
-              <Box sx={{ display: 'flex', gap: 2, mb: 2, flexWrap: 'wrap' }}>
-                {(job.serviceDate || job.startDate) && (() => {
-                  const rawDate = job.serviceDate || job.startDate;
-                  let displayDate = "Invalid Date";
-                  
-                  try {
-                    if (rawDate?.toDate) {
-                      displayDate = rawDate.toDate().toLocaleDateString();
-                    } 
-                    else if (typeof rawDate === 'string') {
-                      displayDate = new Date(rawDate).toLocaleDateString();
-                    }
-                    else if (rawDate instanceof Date) {
-                      displayDate = rawDate.toLocaleDateString();
-                    }
-                  } catch (error) {
-                    console.error("Date parsing error:", error);
-                  }
-                  
-                  return displayDate !== "Invalid Date" ? (
-                    <Chip 
-                      label={`📅 ${displayDate}`}
-                      size="small"
-                      variant="outlined"
-                    />
-                  ) : null;
-                })()}
-                
-                <Chip 
-                  icon={<PhotoLibraryIcon />}
-                  label={`Before: ${(job.beforePhotos || []).length}`}
-                  size="small"
-                  color="primary"
-                  variant="outlined"
-                />
-                <Chip 
-                  icon={<PhotoLibraryIcon />}
-                  label={`After: ${(job.afterPhotos || []).length}`}
-                  size="small"
-                  color="success"
-                  variant="outlined"
-                />
-              </Box>
-            </CardContent>
+                            {/* Job Description — what the job actually is */}
+                            {(job.description || job.notes) ? (
+                              <Box sx={{ mb: 2, p: 1.5, bgcolor: '#f0f4ff', borderRadius: 1, borderLeft: '3px solid #1976d2' }}>
+                                <Typography variant="caption" color="primary" fontWeight="bold" display="block" gutterBottom>
+                                  Job Description
+                                </Typography>
+                                <Typography variant="body2" color="text.primary" sx={{
+                                  display: '-webkit-box',
+                                  WebkitLineClamp: 3,
+                                  WebkitBoxOrient: 'vertical',
+                                  overflow: 'hidden',
+                                  whiteSpace: 'pre-wrap',
+                                }}>
+                                  {job.description || job.notes}
+                                </Typography>
+                                {(job.description || job.notes || '').length > 150 && (
+                                  <Typography variant="caption" color="text.secondary">
+                                    (tap Edit Job to see full description)
+                                  </Typography>
+                                )}
+                              </Box>
+                            ) : (
+                              <Box sx={{ mb: 2, p: 1, bgcolor: '#fff8e1', borderRadius: 1, borderLeft: '3px solid #ff9800' }}>
+                                <Typography variant="caption" color="warning.dark">
+                                  ⚠️ No description — add one via Edit Job
+                                </Typography>
+                              </Box>
+                            )}
 
-            <CardActions sx={{ p: 2, pt: 0, flexDirection: 'column', gap: 1 }}>
-              <Button
-                variant="contained"
-                color="primary"
-                startIcon={<EditIcon />}
-                onClick={() => handleOpenEditDialog(job)}
-                fullWidth
-                size="small"
-              >
-                Edit Job
-              </Button>
+                            {/* Job Type Dropdown */}
+                            <FormControl fullWidth sx={{ mb: 2 }}>
+                              <InputLabel size="small">Job Type</InputLabel>
+                              <Select
+                                size="small"
+                                value={job.jobType || "General Service"}
+                                label="Job Type"
+                                onChange={(e) => handleJobTypeChange(job.id, e.target.value)}
+                              >
+                                <MenuItem value="Quick Weed Service">Quick Weed Service</MenuItem>
+                                <MenuItem value="Maintenance">Maintenance</MenuItem>
+                                <MenuItem value="General Service">General Service</MenuItem>
+                              </Select>
+                            </FormControl>
 
-              <Button
-                variant="outlined"
-                startIcon={<CameraAltIcon />}
-                onClick={() => handleOpenCamera("before", job)}
-                fullWidth
-                size="small"
-              >
-                Take Before Photo
-              </Button>
+                            <FormControl fullWidth sx={{ mb: 2 }}>
+                              <InputLabel size="small">Change Status</InputLabel>
+                              <Select
+                                size="small"
+                                value={job.status || "Pending"}
+                                label="Change Status"
+                                onChange={(e) => handleStatusChange(job.id, e.target.value)}
+                              >
+                                <MenuItem value="Active">Active</MenuItem>
+                                <MenuItem value="Pending">Pending</MenuItem>
+                                <MenuItem value="Completed">Completed</MenuItem>
+                                <MenuItem value="Cancelled">Cancelled</MenuItem>
+                              </Select>
+                            </FormControl>
 
-              <Button
-                variant="outlined"
-                color="success"
-                startIcon={<CameraAltIcon />}
-                onClick={() => handleOpenCamera("after", job)}
-                fullWidth
-                size="small"
-              >
-                Take After Photo
-              </Button>
+                            <Box sx={{ display: 'flex', gap: 1, mb: 1, flexWrap: 'wrap' }}>
+                              <Chip icon={<PhotoLibraryIcon />} label={`Before: ${(job.beforePhotos || []).length}`} size="small" color="primary" variant="outlined" />
+                              <Chip icon={<PhotoLibraryIcon />} label={`After: ${(job.afterPhotos || []).length}`} size="small" color="success" variant="outlined" />
+                            </Box>
+                          </CardContent>
 
-              <Button
-                variant="contained"
-                color="info"
-                onClick={() => handleViewPhotos(job)}
-                fullWidth
-                size="small"
-              >
-                View All Photos ({(job.beforePhotos || []).length + (job.afterPhotos || []).length})
-              </Button>
+                          <CardActions sx={{ p: 2, pt: 0, flexDirection: 'column', gap: 1 }}>
+                            <Button variant="contained" color="primary" startIcon={<EditIcon />} onClick={() => handleOpenEditDialog(job)} fullWidth size="small">Edit Job</Button>
+                            <Button variant="outlined" startIcon={<CameraAltIcon />} onClick={() => handleOpenCamera("before", job)} fullWidth size="small">Take Before Photo</Button>
+                            <Button variant="outlined" color="success" startIcon={<CameraAltIcon />} onClick={() => handleOpenCamera("after", job)} fullWidth size="small">Take After Photo</Button>
+                            <Button variant="contained" color="info" onClick={() => handleViewPhotos(job)} fullWidth size="small">
+                              View All Photos ({(job.beforePhotos || []).length + (job.afterPhotos || []).length})
+                            </Button>
+                            <Button variant="contained" color="primary" onClick={() => navigate(`/job-expenses/${job.id}`)} fullWidth size="small">View Expenses & Profit</Button>
+                            <Button variant="outlined" color="error" onClick={() => handleDeleteJob(job.id, job.clientName)} fullWidth size="small">Delete Job</Button>
+                          </CardActions>
+                        </Card>
+                      );
+                    })}
+                  </Box>
+                </AccordionDetails>
+              </Accordion>
+            );
+          });
+      })()}
 
-              <Button
-                variant="contained"
-                color="primary"
-                onClick={() => navigate(`/job-expenses/${job.id}`)}
-                fullWidth
-                size="small"
-              >
-                View Expenses & Profit
-              </Button>
 
-              <Button
-                variant="outlined"
-                color="error"
-                onClick={() => handleDeleteJob(job.id, job.clientName)}
-                fullWidth
-                size="small"
-              >
-                Delete Job
-              </Button>
-            </CardActions>
-          </Card>
-        ))}
-
-        {sortedJobs.length === 0 && (
-          <Box sx={{ gridColumn: '1 / -1', textAlign: 'center', py: 8 }}>
-            <Typography variant="h6" color="text.secondary">
-              No Jobs Found
-            </Typography>
-            <Typography variant="body2" color="text.secondary">
-              {jobTypeFilter !== "all" 
-                ? `No ${jobTypeFilter} jobs found. Try changing the filter.`
-                : "Jobs will appear here after you create them"
-              }
-            </Typography>
-          </Box>
-        )}
-      </Box>
 
       {/* Camera Dialog */}
       <Dialog 

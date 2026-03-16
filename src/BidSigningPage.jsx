@@ -2,6 +2,8 @@ import React, { useState, useEffect, useRef } from "react";
 import { useParams } from "react-router-dom";
 import { doc, getDoc, updateDoc } from "firebase/firestore";
 import { db } from "./firebase";
+import { getFunctions, httpsCallable } from "firebase/functions";
+import { createFullJobPackage } from "./utils/createFullJobPackage";
 import { getTokenFromUrl } from './utils/tokenUtils';
 import {
   Container,
@@ -21,7 +23,6 @@ import {
 import SignatureCanvas from "react-signature-canvas";
 import CheckCircleIcon from "@mui/icons-material/CheckCircle";
 import Swal from "sweetalert2";
-import { notifyBidAccepted } from "./pushoverNotificationService";
 
 // Create a simple theme for public pages
 const publicTheme = createTheme({
@@ -133,11 +134,29 @@ function BidSigningPageContent() {
 
       console.log("Bid accepted by client:", bidId);
 
-      // Notify admin via Pushover
+      // Phase 3: Notify admins via text
       try {
-        await notifyBidAccepted(bid.customerName, bid.amount);
-      } catch (e) {
-        console.error("Pushover notification error:", e);
+        const functions = getFunctions();
+        const notifySignature = httpsCallable(functions, 'notifySignature');
+        await notifySignature({
+          docType: 'bid',
+          docId: bidId,
+          customerName: bid.customerName,
+          amount: bid.amount,
+        });
+        console.log("Admin notification sent for bid signing");
+      } catch (notifyError) {
+        console.error("Admin notification failed (non-blocking):", notifyError);
+      }
+
+	        // Phase 2C Fix 3: Auto-create contract + invoice + job package
+      try {
+        const bidData = { ...bid, id: bidId };
+         await createFullJobPackage(bidData, true);
+        console.log("Job package auto-created for bid:", bidId);
+      } catch (pkgError) {
+        console.error("Auto-create package failed (will need manual creation):", pkgError);
+        // Don't block the signing success - package can be created manually from Bids list
       }
 
       Swal.fire({
@@ -215,7 +234,7 @@ function BidSigningPageContent() {
             Bid Already Accepted!
           </Typography>
           <Typography variant="body1" color="text.secondary" sx={{ mb: 3 }}>
-            You accepted this bid on {new Date(bid.clientSignedAt).toLocaleString()}
+            You accepted this bid on {bid.clientSignedAt ? new Date(bid.clientSignedAt).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }) : 'a previous date'}
           </Typography>
           <Divider sx={{ my: 3 }} />
           <Typography variant="h6" gutterBottom>

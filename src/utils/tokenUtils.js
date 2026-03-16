@@ -18,7 +18,7 @@ export function generateSecureToken() {
  */
 export function generateSigningUrl(baseUrl, documentType, documentId, token) {
   if (documentType === 'bid') {
-    return `${baseUrl}/sign-bid/${documentId}?token=${token}`;
+    return `${baseUrl}/public/sign-bid/${documentId}?token=${token}`;
   } else if (documentType === 'contract') {
     return `${baseUrl}/sign-contract/${documentId}?token=${token}`;
   }

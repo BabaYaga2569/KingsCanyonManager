@@ -316,6 +316,7 @@ const ServiceClockOut = ({
         const paymentData = {
           invoiceId: invoiceRef.id,
           customerId: selectedCustomer,
+          clientName: customer.name,
           customerName: customer.name,
           amount: total,
           paymentMethod: paymentMethod,
@@ -352,7 +353,10 @@ const ServiceClockOut = ({
         status: paidOnSite ? 'approved' : 'pending',
         invoiceId: invoiceRef.id,
         customerId: selectedCustomer,
+        clientName: customer.name,
         customerName: customer.name,
+        jobDescription: invoiceDescription,
+        jobName: invoiceDescription,
         serviceTotal: total,
         paidOnSite: paidOnSite,
         completedAt: clockOutTime

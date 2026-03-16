@@ -31,8 +31,48 @@ import CheckCircleIcon from "@mui/icons-material/CheckCircle";
 import CancelIcon from "@mui/icons-material/Cancel";
 import EditIcon from "@mui/icons-material/Edit";
 import DeleteIcon from "@mui/icons-material/Delete";
+import GpsFixedIcon from "@mui/icons-material/GpsFixed";
+import Tooltip from "@mui/material/Tooltip";
 import moment from "moment";
 import Swal from "sweetalert2";
+
+// 📍 GPS Badge component for time entries
+function GpsBadge({ entry }) {
+  if (entry.gpsDistanceFeet == null) {
+    return (
+      <Tooltip title="No GPS data recorded">
+        <Chip
+          icon={<GpsFixedIcon />}
+          label="No GPS"
+          size="small"
+          sx={{ backgroundColor: '#f5f5f5', color: '#9e9e9e', fontWeight: 'bold' }}
+        />
+      </Tooltip>
+    );
+  }
+
+  const onSite = entry.gpsDistanceFeet <= 500;
+  const label = onSite
+    ? `✅ ${entry.gpsDistanceFeet} ft`
+    : `⚠️ ${entry.gpsDistanceFeet.toLocaleString()} ft`;
+  const tooltipText = `${onSite ? "ON SITE" : "OFF SITE"} — ${entry.gpsDistanceFeet.toLocaleString()} ft (${entry.gpsDistanceMiles} mi)${entry.jobAddress ? `\n📍 ${entry.jobAddress}` : ""}`;
+
+  return (
+    <Tooltip title={tooltipText}>
+      <Chip
+        icon={<GpsFixedIcon />}
+        label={label}
+        size="small"
+        sx={{
+          backgroundColor: onSite ? '#e8f5e9' : '#fff3e0',
+          color: onSite ? '#2e7d32' : '#e65100',
+          fontWeight: 'bold',
+          border: `1px solid ${onSite ? '#a5d6a7' : '#ffcc80'}`,
+        }}
+      />
+    </Tooltip>
+  );
+}
 
 export default function ApproveTime() {
   const theme = useTheme();
@@ -290,6 +330,11 @@ export default function ApproveTime() {
                     </Box>
                   )}
 
+                  {/* 📍 GPS Badge */}
+                  <Box sx={{ mt: 1 }}>
+                    <GpsBadge entry={entry} />
+                  </Box>
+
                   <Box sx={{ mt: 2, display: 'flex', gap: 1, flexWrap: 'wrap' }}>
                     <Button
                       size="small"
@@ -338,6 +383,7 @@ export default function ApproveTime() {
                   <TableCell>Clock Out</TableCell>
                   <TableCell>Hours</TableCell>
                   <TableCell>Lunch Break</TableCell>
+                  <TableCell>📍 GPS</TableCell>
                   <TableCell>Actions</TableCell>
                 </TableRow>
               </TableHead>
@@ -369,6 +415,9 @@ export default function ApproveTime() {
                           🚫 None
                         </Typography>
                       )}
+                    </TableCell>
+                    <TableCell>
+                      <GpsBadge entry={entry} />
                     </TableCell>
                     <TableCell>
                       <Box sx={{ display: 'flex', gap: 0.5 }}>

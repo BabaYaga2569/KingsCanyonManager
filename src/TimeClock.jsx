@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { collection, addDoc, getDocs, query, where, orderBy, updateDoc, doc } from "firebase/firestore";
+import { collection, addDoc, getDocs, getDoc, query, where, orderBy, updateDoc, doc } from "firebase/firestore";
 import { db } from "./firebase";
 import { useAuth } from "./AuthProvider";
 import {
@@ -21,7 +21,7 @@ import RestaurantIcon from "@mui/icons-material/Restaurant";
 import PlayArrowIcon from "@mui/icons-material/PlayArrow";
 import moment from "moment";
 import Swal from "sweetalert2";
-import { notifyCrewClockIn, notifyCrewClockOut, notifyLunchStart, notifyLunchEnd } from './pushoverNotificationService';
+import { notifyCrewClockIn, notifyCrewClockOut, notifyLunchStart, notifyLunchEnd, notifyFailedClockIn, notifyFailedClockOut } from './pushoverNotificationService';
 
 export default function TimeClock() {
   const { user, userRole } = useAuth();
@@ -186,6 +186,155 @@ export default function TimeClock() {
     }
   };
 
+  // 📍 GPS geofence check — looks up customer address from job's customerId
+  const runGpsCheck = async (job) => {
+	  // Skip GPS if employee has requireGps turned off (office/admin hourly staff)
+  if (employeeInfo?.requireGps === false) {
+    console.log("📍 GPS check skipped — requireGps disabled for this employee");
+    return { passed: true, gpsData: {} };
+  }
+    // Skip GPS for weed service jobs
+    const jobType = (job?.jobType || "").toLowerCase();
+    const jobName = (job?.displayName || job?.clientName || "").toLowerCase();
+    if (jobType.includes("weed") || jobName.includes("weed-service") || jobName.includes("weed service")) {
+      console.log("📍 GPS check skipped for weed service job");
+      return { passed: true, gpsData: {} };
+    }
+
+    // Step 1: Resolve job site address + stored coords via customer lookup
+    let jobAddress = null;
+    let customerDocData = null;
+    const customerId = job?.customerId;
+
+    if (customerId) {
+      try {
+        const customerSnap = await getDoc(doc(db, "customers", customerId));
+        if (customerSnap.exists()) {
+          customerDocData = customerSnap.data();
+          const c = customerDocData;
+          // Build full address from components for best geocoding accuracy
+          const parts = [c.address, c.city, c.state, c.zip].filter(Boolean);
+          if (parts.length > 0) {
+            jobAddress = parts.join(", ");
+          }
+          console.log("📍 Job site address resolved:", jobAddress);
+        } else {
+          console.warn("📍 Customer doc not found for ID:", customerId);
+        }
+      } catch (e) {
+        console.error("📍 Error fetching customer for GPS check:", e);
+      }
+    } else {
+      console.warn("📍 Job has no customerId — cannot resolve address");
+    }
+
+    if (!jobAddress) {
+      await Swal.fire({
+        icon: "warning",
+        title: "No Address Found",
+        text: "Could not verify job site location. Clocking in anyway.",
+        timer: 3000,
+        showConfirmButton: false,
+      });
+      return { passed: true, gpsData: {} };
+    }
+
+    // Step 2: Get crew GPS position
+    let position;
+    try {
+      position = await new Promise((resolve, reject) =>
+        navigator.geolocation.getCurrentPosition(resolve, reject, {
+          enableHighAccuracy: true,
+          timeout: 20000,
+          maximumAge: 0,
+        })
+      );
+    } catch (e) {
+      console.error("📍 Geolocation error:", e);
+      await Swal.fire({
+        icon: "warning",
+        title: "GPS Unavailable",
+        text: "Could not get your location. Clocking in anyway.",
+        timer: 3000,
+        showConfirmButton: false,
+      });
+      return { passed: true, gpsData: {} };
+    }
+
+    const { latitude, longitude, accuracy } = position.coords;
+    console.log(`📍 Crew position: ${latitude}, ${longitude} (±${Math.round(accuracy)}ft)`);
+
+    // Step 3: Use stored coordinates from customer doc (geocoded when address was saved)
+    // Fake or unverifiable addresses will have null coords and soft-allow clock-in
+    const jobLat = customerDocData?.geoLat || null;
+    const jobLng = customerDocData?.geoLng || null;
+
+    if (!jobLat || !jobLng) {
+      console.warn("📍 No verified coordinates for this customer — address was not geocoded on save");
+      await Swal.fire({
+        icon: "warning",
+        title: "Address Not Verified",
+        html: `This job site has no verified GPS coordinates.<br/>Ask your manager to update the customer address.<br/><br/><small style="color:#888">Clocking in anyway.</small>`,
+        timer: 4000,
+        showConfirmButton: false,
+      });
+      return { passed: true, gpsData: { gpsLat: latitude, gpsLng: longitude, gpsAccuracy: Math.round(accuracy), jobAddress } };
+    }
+
+    console.log(`📍 Job site (stored coords): ${jobLat}, ${jobLng}`);
+
+    // Step 4: Haversine distance in feet
+    const R = 20902231; // Earth radius in feet
+    const dLat = ((jobLat - latitude) * Math.PI) / 180;
+    const dLng = ((jobLng - longitude) * Math.PI) / 180;
+    const a =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos((latitude * Math.PI) / 180) *
+        Math.cos((jobLat * Math.PI) / 180) *
+        Math.sin(dLng / 2) ** 2;
+    const distanceFeet = Math.round(R * 2 * Math.asin(Math.sqrt(a)));
+    const distanceMiles = (distanceFeet / 5280).toFixed(2);
+
+    console.log(`📍 Distance to job site: ${distanceFeet} ft (${distanceMiles} mi)`);
+
+    const gpsData = {
+      gpsLat: latitude,
+      gpsLng: longitude,
+      gpsAccuracy: Math.round(accuracy),
+      gpsDistanceFeet: distanceFeet,
+      gpsDistanceMiles: parseFloat(distanceMiles),
+      jobAddress,
+      // Store job site coords so clock-out can calculate distance without re-geocoding
+      gpsJobLat: jobLat,
+      gpsJobLng: jobLng,
+    };
+
+    // Step 5: Enforce 500 ft geofence
+    if (distanceFeet > 500) {
+      await Swal.fire({
+        icon: "error",
+        title: "Too Far from Job Site",
+        html: `You are <strong>${distanceFeet.toLocaleString()} ft (${distanceMiles} mi)</strong> from the job site.<br/><br/>
+               You must be within <strong>500 ft</strong> to clock in.<br/>
+               <small style="color:#888">${jobAddress}</small>`,
+        confirmButtonText: "OK",
+      });
+
+      // 🚨 Alert admin about the failed attempt
+      try {
+        const failedName = employeeInfo?.name || "Unknown Employee";
+        const jobName = job?.displayName || job?.clientName || "Unknown Job";
+        await notifyFailedClockIn(failedName, jobName, distanceFeet, parseFloat(distanceMiles), jobAddress);
+      } catch (e) {
+        console.error("📍 Failed to send blocked clock-in notification:", e);
+      }
+
+      return { passed: false, gpsData };
+    }
+
+    return { passed: true, gpsData };
+  };
+
   const handleClockIn = async () => {
     if (!selectedJob) {
       Swal.fire("Error", "Please select a job first", "warning");
@@ -194,6 +343,11 @@ export default function TimeClock() {
 
     try {
       const job = jobs.find(j => j.id === selectedJob);
+
+      // 📍 GPS geofence check before clocking in
+      const { passed, gpsData } = await runGpsCheck(job);
+      if (!passed) return;
+
       const now = new Date().toISOString();
       const employeeName = employeeInfo?.name || user.displayName || user.email;
 
@@ -207,12 +361,14 @@ export default function TimeClock() {
         clockIn: now,
         clockOut: null,
         hoursWorked: null,
-        // 🍔 NEW: Lunch tracking fields
+        // 🍔 Lunch tracking fields
         lunchStartTime: null,
         lunchEndTime: null,
         lunchMinutes: 0,
         status: "pending",
         createdAt: now,
+        // 📍 GPS data
+        ...gpsData,
       };
 
       console.log("✅ Clocking in as:", employeeName);
@@ -224,7 +380,7 @@ export default function TimeClock() {
       setTotalLunchTime(0);
 
       try {
-        await notifyCrewClockIn(employeeName, job?.displayName || "Unknown Job");
+        await notifyCrewClockIn(employeeName, job?.displayName || "Unknown Job", gpsData);
       } catch (smsError) {
         console.error('Error sending clock in notification:', smsError);
       }
@@ -335,10 +491,81 @@ export default function TimeClock() {
       const lunchHours = (currentEntry.lunchMinutes || 0) / 60;
       const workedHours = totalHours - lunchHours;
 
+      // 📍 Capture GPS on clock-out (soft — never blocks clock-out)
+      let gpsOutData = {};
+      try {
+        const position = await new Promise((resolve, reject) =>
+          navigator.geolocation.getCurrentPosition(resolve, reject, {
+            enableHighAccuracy: true,
+            timeout: 20000,
+            maximumAge: 0,
+          })
+        );
+        const { latitude, longitude, accuracy } = position.coords;
+
+        // Use stored job site coords from clock-in entry (gpsLat/gpsLng saved at clock-in)
+        // Fall back to stored customer geoLat/geoLng if available
+        const jobLat = currentEntry.gpsJobLat || null;
+        const jobLng = currentEntry.gpsJobLng || null;
+
+        if (jobLat && jobLng) {
+          const R = 20902231;
+          const dLat = ((jobLat - latitude) * Math.PI) / 180;
+          const dLng = ((jobLng - longitude) * Math.PI) / 180;
+          const a =
+            Math.sin(dLat / 2) ** 2 +
+            Math.cos((latitude * Math.PI) / 180) *
+              Math.cos((jobLat * Math.PI) / 180) *
+              Math.sin(dLng / 2) ** 2;
+          const distanceFeet = Math.round(R * 2 * Math.asin(Math.sqrt(a)));
+          gpsOutData = {
+            gpsOutLat: latitude,
+            gpsOutLng: longitude,
+            gpsOutAccuracy: Math.round(accuracy),
+            gpsOutDistanceFeet: distanceFeet,
+            gpsOutDistanceMiles: parseFloat((distanceFeet / 5280).toFixed(2)),
+          };
+        } else {
+          gpsOutData = { gpsOutLat: latitude, gpsOutLng: longitude, gpsOutAccuracy: Math.round(accuracy) };
+        }
+        console.log("📍 Clock-out GPS captured:", gpsOutData);
+
+        // ⚠️ Warn if clocking out far from job site (never blocks)
+        if (gpsOutData.gpsOutDistanceFeet != null && gpsOutData.gpsOutDistanceFeet > 500) {
+          await Swal.fire({
+            icon: "warning",
+            title: "Not at Job Site",
+            html: `You are <strong>${gpsOutData.gpsOutDistanceFeet.toLocaleString()} ft (${gpsOutData.gpsOutDistanceMiles} mi)</strong> from the job site.<br/><br/>
+                   Your manager has been notified.<br/>
+                   <small style="color:#888">${currentEntry.jobAddress || ""}</small>`,
+            confirmButtonText: "Clock Out Anyway",
+            confirmButtonColor: "#d32f2f",
+          });
+
+          // Notify admin immediately
+          try {
+            const empName = currentEntry.crewName || user.displayName || user.email;
+            await notifyFailedClockOut(
+              empName,
+              currentEntry.jobName || "Unknown Job",
+              gpsOutData.gpsOutDistanceFeet,
+              gpsOutData.gpsOutDistanceMiles,
+              currentEntry.jobAddress || null,
+              workedHours.toFixed(2)
+            );
+          } catch (e) {
+            console.error("📍 Failed to send off-site clock-out notification:", e);
+          }
+        }
+      } catch (e) {
+        console.warn("📍 Clock-out GPS unavailable:", e.message);
+      }
+
       await updateDoc(doc(db, "job_time_entries", currentEntry.id), {
         clockOut: now,
         hoursWorked: parseFloat(workedHours.toFixed(2)),
         updatedAt: now,
+        ...gpsOutData,
       });
 
       setClockedIn(false);
@@ -353,7 +580,10 @@ export default function TimeClock() {
 
       try {
         const employeeName = currentEntry.crewName || user.displayName || user.email;
-        await notifyCrewClockOut(employeeName, workedHours.toFixed(2));
+        await notifyCrewClockOut(employeeName, workedHours.toFixed(2), {
+          ...gpsOutData,
+          jobAddress: currentEntry.jobAddress || null,
+        });
       } catch (smsError) {
         console.error('Error sending clock out notification:', smsError);
       }

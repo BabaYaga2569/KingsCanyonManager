@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { doc, getDoc, addDoc, updateDoc, collection, getDocs, query, where, or } from "firebase/firestore";
+import { doc, getDoc, addDoc, updateDoc, collection } from "firebase/firestore";
 import { db } from "./firebase";
 import {
   Box,
@@ -19,6 +19,7 @@ import {
 import SaveIcon from "@mui/icons-material/Save";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import Swal from "sweetalert2";
+import { checkDuplicateCustomer, showDuplicateDialog } from "./utils/checkDuplicateCustomer";
 
 const TAG_OPTIONS = ["VIP", "weekly-mowing", "commercial", "residential", "priority"];
 
@@ -52,7 +53,6 @@ export default function CustomerEditor() {
     try {
       const docRef = doc(db, "customers", id);
       const docSnap = await getDoc(docRef);
-
       if (docSnap.exists()) {
         setCustomer({ id: docSnap.id, ...docSnap.data() });
       } else {
@@ -74,119 +74,91 @@ export default function CustomerEditor() {
   };
 
   const handleTagsChange = (event) => {
-    const {
-      target: { value },
-    } = event;
+    const { target: { value } } = event;
     setCustomer({
       ...customer,
       tags: typeof value === "string" ? value.split(",") : value,
     });
   };
 
-  const checkForDuplicates = async () => {
-    try {
-      const customersRef = collection(db, "customers");
-      
-      // Check for exact name match or phone match
-      const nameQuery = query(customersRef, where("name", "==", customer.name.trim()));
-      const phoneQuery = query(customersRef, where("phone", "==", customer.phone.trim()));
-      
-      const [nameResults, phoneResults] = await Promise.all([
-        getDocs(nameQuery),
-        getDocs(phoneQuery)
-      ]);
-      
-      const duplicates = [];
-      const seenIds = new Set();
-      
-      // Collect unique duplicates
-      nameResults.forEach(doc => {
-        if (!seenIds.has(doc.id)) {
-          seenIds.add(doc.id);
-          duplicates.push({ id: doc.id, ...doc.data(), matchType: 'name' });
-        }
-      });
-      
-      phoneResults.forEach(doc => {
-        if (!seenIds.has(doc.id)) {
-          seenIds.add(doc.id);
-          duplicates.push({ id: doc.id, ...doc.data(), matchType: 'phone' });
-        } else {
-          // If already added by name, mark as both
-          const existing = duplicates.find(d => d.id === doc.id);
-          if (existing) existing.matchType = 'both';
-        }
-      });
-      
-      return duplicates;
-    } catch (error) {
-      console.error("Error checking for duplicates:", error);
-      return [];
-    }
-  };
-
   const handleSave = async () => {
-    // Validation
-    if (!customer.name || !customer.phone) {
-      Swal.fire("Missing Info", "Name and phone are required", "warning");
+    // Validation - address is required
+    if (!customer.name || !customer.phone || !customer.address) {
+      const missing = [];
+      if (!customer.name) missing.push("Name");
+      if (!customer.phone) missing.push("Phone");
+      if (!customer.address) missing.push("Address");
+      Swal.fire(
+        "Missing Info",
+        `The following fields are required: ${missing.join(", ")}`,
+        "warning"
+      );
       return;
     }
 
     setSaving(true);
+
+    // Duplicate detection — hard block on email/phone, soft warning on name/address
+    // Pass current id as excludeId when editing so we don't flag against self
+    const excludeId = isNewCustomer ? null : id;
+    const duplicates = await checkDuplicateCustomer(
+      db,
+      {
+        name: customer.name,
+        phone: customer.phone,
+        email: customer.email,
+        address: customer.address,
+      },
+      excludeId
+    );
+
+    const action = await showDuplicateDialog(duplicates, navigate);
+    if (action === "block" || action === "cancel") {
+      setSaving(false);
+      return;
+    }
+
+    // action === 'proceed' — save the customer
     try {
-      // Check for duplicates BEFORE creating a new customer
-      if (isNewCustomer) {
-        const duplicates = await checkForDuplicates();
-        
-        if (duplicates.length > 0) {
-          setSaving(false);
-          
-          // Build HTML for duplicate info
-          const duplicate = duplicates[0]; // Show first match
-          const matchInfo = duplicate.matchType === 'both' 
-            ? 'name and phone number'
-            : duplicate.matchType === 'name' 
-            ? 'name' 
-            : 'phone number';
-          
-          const result = await Swal.fire({
+      // 📍 Geocode the address and store coordinates to enable GPS geofencing
+      let geoLat = null;
+      let geoLng = null;
+      const fullAddress = [customer.address, customer.city, customer.state, customer.zip]
+        .filter(Boolean).join(", ");
+
+      try {
+        const encoded = encodeURIComponent(fullAddress);
+        const geoRes = await fetch(
+          `https://nominatim.openstreetmap.org/search?q=${encoded}&format=json&limit=1`,
+          { headers: { "User-Agent": "KCLManager/1.0 (Kings Canyon Landscaping)" } }
+        );
+        const geoData = await geoRes.json();
+        if (geoData.length > 0) {
+          geoLat = parseFloat(geoData[0].lat);
+          geoLng = parseFloat(geoData[0].lon);
+          console.log(`📍 Geocoded: ${fullAddress} → ${geoLat}, ${geoLng}`);
+        } else {
+          console.warn("📍 Could not geocode address:", fullAddress);
+          // Warn admin — address won't work for GPS geofencing
+          const { value: continueAnyway } = await Swal.fire({
             icon: "warning",
-            title: "Possible Duplicate Found!",
-            html: `
-              <div style="text-align: left;">
-                <p>A customer with the same <strong>${matchInfo}</strong> already exists:</p>
-                <div style="background: #f5f5f5; padding: 15px; border-radius: 8px; margin: 15px 0;">
-                  <p style="margin: 5px 0;"><strong>Name:</strong> ${duplicate.name}</p>
-                  ${duplicate.phone ? `<p style="margin: 5px 0;"><strong>Phone:</strong> ${duplicate.phone}</p>` : ''}
-                  ${duplicate.email ? `<p style="margin: 5px 0;"><strong>Email:</strong> ${duplicate.email}</p>` : ''}
-                  ${duplicate.address ? `<p style="margin: 5px 0;"><strong>Address:</strong> ${duplicate.address}</p>` : ''}
-                </div>
-                <p>What would you like to do?</p>
-              </div>
-            `,
+            title: "Address Not Found",
+            html: `The address <strong>${fullAddress}</strong> could not be verified on the map.<br/><br/>
+                   Crew members will <strong>not be GPS-blocked</strong> for this customer's jobs until a valid address is saved.<br/><br/>
+                   Continue saving anyway?`,
             showCancelButton: true,
-            showDenyButton: true,
-            confirmButtonText: 'View Existing Customer',
-            denyButtonText: 'Create Anyway',
-            cancelButtonText: 'Cancel',
-            confirmButtonColor: '#2196f3',
-            denyButtonColor: '#ff9800',
+            confirmButtonText: "Save Anyway",
+            cancelButtonText: "Go Back & Fix Address",
           });
-          
-          if (result.isConfirmed) {
-            // Navigate to existing customer
-            navigate(`/customer/${duplicate.id}`);
-            return;
-          } else if (result.isDenied) {
-            // User wants to create anyway, continue with save
-            setSaving(true);
-          } else {
-            // User cancelled
+          if (!continueAnyway) {
+            setSaving(false);
             return;
           }
         }
+      } catch (geoErr) {
+        console.warn("📍 Geocoding error:", geoErr);
       }
-      
+
       const customerData = {
         name: customer.name,
         phone: customer.phone,
@@ -198,6 +170,10 @@ export default function CustomerEditor() {
         notes: customer.notes || "",
         tags: customer.tags || [],
         updatedAt: new Date().toISOString(),
+        nameLower: customer.name.toLowerCase(),
+        // 📍 Stored coordinates for GPS geofencing — null if address unverifiable
+        geoLat,
+        geoLng,
       };
 
       if (isNewCustomer) {
@@ -207,9 +183,9 @@ export default function CustomerEditor() {
         customerData.contractCount = 0;
         customerData.invoiceCount = 0;
         customerData.jobCount = 0;
-        
-        const docRef = await addDoc(collection(db, "customers"), customerData);
-        
+
+        await addDoc(collection(db, "customers"), customerData);
+
         await Swal.fire({
           icon: "success",
           title: "Customer Added!",
@@ -217,11 +193,11 @@ export default function CustomerEditor() {
           timer: 2000,
           showConfirmButton: false,
         });
-        
+
         navigate("/customers");
       } else {
         await updateDoc(doc(db, "customers", id), customerData);
-        
+
         await Swal.fire({
           icon: "success",
           title: "Customer Updated!",
@@ -229,7 +205,7 @@ export default function CustomerEditor() {
           timer: 2000,
           showConfirmButton: false,
         });
-        
+
         navigate("/customers");
       }
     } catch (error) {
@@ -251,6 +227,7 @@ export default function CustomerEditor() {
 
   return (
     <Box sx={{ p: { xs: 2, sm: 3 }, maxWidth: 800, mx: "auto" }}>
+
       {/* Header */}
       <Box sx={{ display: "flex", gap: 2, mb: 3, alignItems: "center" }}>
         <Button
@@ -268,6 +245,7 @@ export default function CustomerEditor() {
       {/* Form */}
       <Paper sx={{ p: { xs: 2, sm: 3 } }}>
         <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
+
           {/* Name */}
           <TextField
             label="Customer Name"
@@ -289,6 +267,7 @@ export default function CustomerEditor() {
             fullWidth
             placeholder="e.g., 928-555-1234"
             type="tel"
+            helperText="Must be unique — used for notifications and signing links"
           />
 
           {/* Email */}
@@ -300,6 +279,7 @@ export default function CustomerEditor() {
             fullWidth
             placeholder="e.g., sarah.smith@email.com"
             type="email"
+            helperText="Must be unique — used for signing links and invoice reminders"
           />
 
           {/* Address */}
@@ -308,8 +288,10 @@ export default function CustomerEditor() {
             name="address"
             value={customer.address}
             onChange={handleChange}
+            required
             fullWidth
             placeholder="e.g., 123 Desert View Dr"
+            helperText="Required – needed for scheduling and GPS navigation"
           />
 
           {/* City, State, Zip */}
@@ -398,7 +380,13 @@ export default function CustomerEditor() {
               fullWidth
               size="large"
             >
-              {saving ? <CircularProgress size={24} /> : isNewCustomer ? "Add Customer" : "Save Changes"}
+              {saving ? (
+                <CircularProgress size={24} />
+              ) : isNewCustomer ? (
+                "Add Customer"
+              ) : (
+                "Save Changes"
+              )}
             </Button>
             <Button
               variant="outlined"
@@ -408,25 +396,28 @@ export default function CustomerEditor() {
               Cancel
             </Button>
           </Box>
+
         </Box>
       </Paper>
 
       {/* Quick Tips */}
       <Paper sx={{ p: 2, mt: 3, bgcolor: "#f5f5f5" }}>
         <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1 }}>
-          ðŸ’¡ Pro Tips:
+          💡 Pro Tips:
         </Typography>
         <Typography variant="body2" component="div">
-          â€¢ Add gate codes and special instructions in Notes
+          • Add gate codes and special instructions in Notes
           <br />
-          â€¢ Use VIP tag for your best customers
+          • Use VIP tag for your best customers
           <br />
-          â€¢ Use weekly-mowing tag for recurring customers
+          • Use weekly-mowing tag for recurring customers
           <br />
-          â€¢ Full address helps with GPS navigation
-          <br />â€¢ Phone number is required for calling/texting
+          • Full address helps with GPS navigation
+          <br />
+          • Phone and email must be unique per customer
         </Typography>
       </Paper>
+
     </Box>
   );
 }

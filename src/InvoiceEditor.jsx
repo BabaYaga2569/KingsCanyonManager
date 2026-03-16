@@ -20,13 +20,15 @@ import {
   Card,
   CardContent,
   Chip,
-  Autocomplete,
 } from "@mui/material";
 import Swal from "sweetalert2";
 import TrendingUpIcon from '@mui/icons-material/TrendingUp';
 import ReceiptLongIcon from '@mui/icons-material/ReceiptLong';
 import ScheduleIcon from '@mui/icons-material/Schedule';
+import EmailIcon from '@mui/icons-material/Email';
 import moment from 'moment';
+import jsPDF from "jspdf";
+import { sendInvoiceEmail } from "./emailService";
 
 const InvoiceEditor = () => {
   const { id } = useParams();
@@ -34,9 +36,13 @@ const InvoiceEditor = () => {
   const [invoice, setInvoice] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [sending, setSending] = useState(false);
 
   // Separate state for tax rate
   const [taxRate, setTaxRate] = useState(0);
+  
+  // Logo for PDF
+  const [logoDataUrl, setLogoDataUrl] = useState(null);
   
   // NEW: Expense tracking state
   const [expenses, setExpenses] = useState([]);
@@ -49,9 +55,6 @@ const InvoiceEditor = () => {
   const [numberOfPayments, setNumberOfPayments] = useState(4);
   const [downPaymentPercent, setDownPaymentPercent] = useState(20);
   const [firstPaymentDate, setFirstPaymentDate] = useState(moment().format('YYYY-MM-DD'));
-
-  // Customer lookup
-  const [customers, setCustomers] = useState([]);
 
   useEffect(() => {
     const fetchInvoice = async () => {
@@ -113,18 +116,83 @@ const InvoiceEditor = () => {
     fetchInvoice();
   }, [id, navigate]);
 
-  // Load customers for auto-fill
+  // Auto-populate client info from customers collection if missing
   useEffect(() => {
-    const fetchCustomers = async () => {
+    const populateClientInfo = async () => {
+      if (!invoice) return;
+      
+      // First, check if data exists under alternate field names (customerEmail vs clientEmail)
+      const currentEmail = invoice.clientEmail || invoice.customerEmail || "";
+      const currentPhone = invoice.clientPhone || invoice.customerPhone || "";
+      const currentAddress = invoice.clientAddress || invoice.customerAddress || "";
+      
+      // If we already have all info (under either naming), just normalize to client* fields
+      if (currentEmail && currentPhone && currentAddress) {
+        if (!invoice.clientEmail || !invoice.clientPhone || !invoice.clientAddress) {
+          setInvoice(prev => ({
+            ...prev,
+            clientEmail: currentEmail,
+            clientPhone: currentPhone,
+            clientAddress: currentAddress,
+          }));
+        }
+        return;
+      }
+      
       try {
-        const snap = await getDocs(collection(db, "customers"));
-        setCustomers(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-      } catch (e) {
-        console.error("Error loading customers:", e);
+        let customerData = null;
+        
+        // Try by customerId first
+        if (invoice.customerId) {
+          const customerDoc = await getDoc(doc(db, "customers", invoice.customerId));
+          if (customerDoc.exists()) {
+            customerData = customerDoc.data();
+          }
+        }
+        
+        // Fallback: search by name
+        if (!customerData && invoice.clientName) {
+          const q = query(collection(db, "customers"), where("name", "==", invoice.clientName));
+          const snap = await getDocs(q);
+          if (!snap.empty) {
+            customerData = snap.docs[0].data();
+            // Save the customerId for future lookups
+            try {
+              await updateDoc(doc(db, "invoices", id), { customerId: snap.docs[0].id });
+            } catch (e) {
+              console.error("Error saving customerId:", e);
+            }
+          }
+        }
+        
+        if (customerData) {
+          const updates = {};
+          if (!currentEmail && customerData.email) updates.clientEmail = customerData.email;
+          if (!currentPhone && customerData.phone) updates.clientPhone = customerData.phone;
+          if (!currentAddress) {
+            const addr = [customerData.address, customerData.city, customerData.state, customerData.zip]
+              .filter(Boolean).join(", ");
+            if (addr) updates.clientAddress = addr;
+          }
+          
+          if (Object.keys(updates).length > 0) {
+            setInvoice(prev => ({ ...prev, ...updates }));
+            // Save to invoice so it persists
+            try {
+              await updateDoc(doc(db, "invoices", id), updates);
+              console.log("✅ Auto-populated client info from customer record");
+            } catch (e) {
+              console.error("Error saving client info:", e);
+            }
+          }
+        }
+      } catch (err) {
+        console.error("Error looking up customer:", err);
       }
     };
-    fetchCustomers();
-  }, []);
+    
+    populateClientInfo();
+  }, [invoice?.clientName, invoice?.customerId]);
 
   // NEW: Load expenses for this job
   useEffect(() => {
@@ -149,6 +217,34 @@ const InvoiceEditor = () => {
       fetchExpenses();
     }
   }, [invoice?.jobId]);
+
+  const COMPANY = {
+    name: "Kings Canyon Landscaping LLC",
+    cityState: "Bullhead City, AZ",
+    phone: "(928) 450-5733",
+    email: "kingscanyon775@gmail.com",
+    logoPath: "/logo-kcl.png",
+  };
+
+  // Preload logo for PDF
+  useEffect(() => {
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => {
+      try {
+        const c = document.createElement("canvas");
+        c.width = img.width;
+        c.height = img.height;
+        const ctx = c.getContext("2d");
+        ctx.drawImage(img, 0, 0);
+        setLogoDataUrl(c.toDataURL("image/png"));
+      } catch (e) {
+        console.error("Logo loading error:", e);
+      }
+    };
+    img.onerror = () => setLogoDataUrl(null);
+    img.src = COMPANY.logoPath;
+  }, []);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -352,6 +448,324 @@ const InvoiceEditor = () => {
     }
   };
 
+  // helper for PDF text wrapping
+  const writeParagraph = (pdfDoc, text, x, yStart, maxWidth) => {
+    const lines = pdfDoc.splitTextToSize(text, maxWidth);
+    pdfDoc.text(lines, x, yStart);
+    return yStart + lines.length * 12;
+  };
+
+  // Build Invoice PDF
+  const buildInvoicePDF = () => {
+    if (!invoice) return null;
+
+    const docPDF = new jsPDF({ unit: "pt", format: "letter" });
+    const W = docPDF.internal.pageSize.getWidth();
+    const H = docPDF.internal.pageSize.getHeight();
+
+    const invoiceSubtotal = parseFloat(invoice.subtotal || invoice.amount || 0);
+    const invoiceTax = parseFloat(invoice.tax || 0);
+    const invoiceTotal = invoiceSubtotal + invoiceTax;
+
+    // Frame
+    docPDF.setDrawColor(60);
+    docPDF.setLineWidth(1);
+    docPDF.rect(28, 28, W - 56, H - 56);
+
+    // Logo
+    if (logoDataUrl) {
+      try {
+        docPDF.addImage(logoDataUrl, "PNG", 40, 42, 60, 60);
+      } catch (e) {
+        console.error("Error adding logo:", e);
+      }
+    }
+
+    // Company info
+    docPDF.setFont("helvetica", "bold");
+    docPDF.setFontSize(14);
+    docPDF.text(COMPANY.name, 110, 50);
+    docPDF.setFont("helvetica", "normal");
+    docPDF.setFontSize(10);
+    docPDF.text(COMPANY.cityState, 110, 66);
+    docPDF.text(COMPANY.phone, 110, 80);
+    docPDF.text(COMPANY.email, 110, 94);
+
+    // Title
+    docPDF.setFont("helvetica", "bold");
+    docPDF.setFontSize(18);
+    docPDF.text("INVOICE", W - 40, 55, { align: "right" });
+
+    // Invoice meta
+    docPDF.setFont("helvetica", "normal");
+    docPDF.setFontSize(10);
+    docPDF.text(`Invoice No.: ${id.slice(-8)}`, W - 40, 75, { align: "right" });
+    docPDF.text(`Date: ${invoice.invoiceDate || new Date().toLocaleDateString()}`, W - 40, 89, { align: "right" });
+    if (invoice.status) {
+      docPDF.text(`Status: ${invoice.status}`, W - 40, 103, { align: "right" });
+    }
+
+    // Divider
+    docPDF.setDrawColor(150);
+    docPDF.line(40, 115, W - 40, 115);
+
+    // Bill To
+    let y = 135;
+    docPDF.setFont("helvetica", "bold");
+    docPDF.setFontSize(11);
+    docPDF.text("Bill To:", 40, y);
+    y += 16;
+    docPDF.setFont("helvetica", "normal");
+    docPDF.setFontSize(10);
+    docPDF.text(invoice.clientName || "N/A", 40, y);
+    y += 14;
+    if (invoice.clientAddress) {
+      const addrLines = docPDF.splitTextToSize(invoice.clientAddress, 250);
+      docPDF.text(addrLines, 40, y);
+      y += addrLines.length * 12;
+    }
+    if (invoice.clientEmail) {
+      docPDF.text(invoice.clientEmail, 40, y);
+      y += 14;
+    }
+    if (invoice.clientPhone) {
+      docPDF.text(invoice.clientPhone, 40, y);
+      y += 14;
+    }
+
+    y += 16;
+
+    // Description
+    docPDF.setFont("helvetica", "bold");
+    docPDF.setFontSize(11);
+    docPDF.text("Description of Work", 40, y);
+    y += 14;
+    docPDF.setFont("helvetica", "normal");
+    docPDF.setFontSize(10);
+    const desc = docPDF.splitTextToSize(invoice.description || "Landscaping services", W - 80);
+    docPDF.text(desc, 40, y);
+    y += desc.length * 12 + 14;
+
+    // Materials
+    if (invoice.materials) {
+      docPDF.setFont("helvetica", "bold");
+      docPDF.setFontSize(11);
+      docPDF.text("Materials", 40, y);
+      y += 14;
+      docPDF.setFont("helvetica", "normal");
+      docPDF.setFontSize(10);
+      const mats = docPDF.splitTextToSize(invoice.materials, W - 80);
+      docPDF.text(mats, 40, y);
+      y += mats.length * 12 + 14;
+    }
+
+    // Pricing table
+    y += 10;
+    docPDF.setDrawColor(60);
+    docPDF.setFillColor(240, 240, 240);
+    docPDF.rect(W - 280, y, 240, 24, "F");
+    docPDF.setFont("helvetica", "bold");
+    docPDF.setFontSize(10);
+    docPDF.text("Item", W - 270, y + 16);
+    docPDF.text("Amount", W - 60, y + 16, { align: "right" });
+    y += 28;
+
+    // Subtotal row
+    docPDF.setFont("helvetica", "normal");
+    docPDF.text("Subtotal", W - 270, y + 14);
+    docPDF.text(`$${invoiceSubtotal.toFixed(2)}`, W - 60, y + 14, { align: "right" });
+    docPDF.line(W - 280, y + 20, W - 40, y + 20);
+    y += 24;
+
+    // Tax row
+    if (invoiceTax > 0) {
+      docPDF.text(`Tax (${taxRate}%)`, W - 270, y + 14);
+      docPDF.text(`$${invoiceTax.toFixed(2)}`, W - 60, y + 14, { align: "right" });
+      docPDF.line(W - 280, y + 20, W - 40, y + 20);
+      y += 24;
+    }
+
+    // Total row
+    docPDF.setFillColor(21, 101, 192);
+    docPDF.rect(W - 280, y, 240, 28, "F");
+    docPDF.setFont("helvetica", "bold");
+    docPDF.setFontSize(12);
+    docPDF.setTextColor(255, 255, 255);
+    docPDF.text("TOTAL", W - 270, y + 18);
+    docPDF.text(`$${invoiceTotal.toFixed(2)}`, W - 60, y + 18, { align: "right" });
+    docPDF.setTextColor(0, 0, 0);
+    y += 40;
+
+    // Payment plan summary
+    if (paymentPlanEnabled) {
+      y += 10;
+      docPDF.setFont("helvetica", "bold");
+      docPDF.setFontSize(11);
+      docPDF.text("Payment Schedule", 40, y);
+      y += 16;
+      docPDF.setFont("helvetica", "normal");
+      docPDF.setFontSize(10);
+
+      const schedule = calculatePaymentSchedule();
+      schedule.forEach((payment, idx) => {
+        const label = idx === 0 ? "Down Payment" : `Payment #${idx + 1}`;
+        const date = moment(payment.dueDate).format("MMM DD, YYYY");
+        docPDF.text(`${label}: $${payment.amount.toFixed(2)} — Due ${date}`, 50, y);
+        y += 14;
+      });
+      y += 10;
+    }
+
+    // Payment info
+    y += 10;
+    docPDF.setFont("helvetica", "bold");
+    docPDF.setFontSize(11);
+    docPDF.text("Payment Options", 40, y);
+    y += 16;
+    docPDF.setFont("helvetica", "normal");
+    docPDF.setFontSize(10);
+    docPDF.text("Zelle: 928-450-5733", 50, y);
+    y += 14;
+    docPDF.text("Cash or Check accepted on-site", 50, y);
+    y += 14;
+
+    // Notes
+    if (invoice.notes) {
+      y += 10;
+      docPDF.setFont("helvetica", "bold");
+      docPDF.setFontSize(11);
+      docPDF.text("Notes", 40, y);
+      y += 14;
+      docPDF.setFont("helvetica", "normal");
+      docPDF.setFontSize(10);
+      const notes = docPDF.splitTextToSize(invoice.notes, W - 80);
+      docPDF.text(notes, 40, y);
+    }
+
+    // Footer
+    docPDF.setFontSize(9);
+    docPDF.setTextColor(100);
+    docPDF.text(
+      "Thank you for choosing Kings Canyon Landscaping. We appreciate your business.",
+      W / 2, H - 36, { align: "center" }
+    );
+
+    return docPDF;
+  };
+
+  // Download Invoice PDF
+  const handleGeneratePDF = () => {
+    try {
+      const docPDF = buildInvoicePDF();
+      if (!docPDF) return;
+
+      const filenameSafe = (invoice.clientName || "Invoice").replace(/[^\w\- ]+/g, "_").replace(/\s+/g, "_");
+      const filename = `${filenameSafe}_Invoice_${id.slice(-8)}.pdf`;
+      docPDF.save(filename);
+
+      Swal.fire({
+        icon: "success",
+        title: "PDF Downloaded!",
+        text: `Invoice saved as ${filename}`,
+        timer: 2000,
+        showConfirmButton: false,
+      });
+    } catch (error) {
+      console.error("Error generating PDF:", error);
+      Swal.fire("Error", "Failed to generate PDF.", "error");
+    }
+  };
+
+  // ✅ EMAIL INVOICE TO CUSTOMER
+  const handleEmailToCustomer = async () => {
+    let emailToSend = invoice.clientEmail || invoice.customerEmail || "";
+    
+    if (!emailToSend) {
+      const { value: enteredEmail } = await Swal.fire({
+        title: 'Customer Email',
+        input: 'email',
+        inputLabel: `Enter email for ${invoice.clientName}`,
+        inputPlaceholder: 'customer@email.com',
+        showCancelButton: true,
+        confirmButtonText: 'Send',
+        validationMessage: 'Please enter a valid email address',
+      });
+      
+      if (!enteredEmail) return;
+      emailToSend = enteredEmail;
+      
+      // Save email to invoice
+      setInvoice({ ...invoice, clientEmail: enteredEmail });
+      try {
+        await updateDoc(doc(db, "invoices", id), { clientEmail: enteredEmail });
+      } catch (e) {
+        console.error("Error saving client email:", e);
+      }
+    }
+    
+    const invoiceTotal = parseFloat(invoice.subtotal || invoice.amount || 0) + parseFloat(invoice.tax || 0);
+    
+    const confirm = await Swal.fire({
+      title: 'Email Invoice',
+      html: `Send invoice PDF ($${invoiceTotal.toFixed(2)}) to:<br/><strong>${invoice.clientName}</strong><br/>${emailToSend}`,
+      icon: 'question',
+      showCancelButton: true,
+      confirmButtonText: 'Send Email',
+      confirmButtonColor: '#1565c0',
+    });
+    
+    if (!confirm.isConfirmed) return;
+    
+    setSending(true);
+    try {
+      const docPDF = buildInvoicePDF();
+      if (!docPDF) throw new Error("Failed to generate PDF");
+      
+      const pdfBase64 = docPDF.output('datauristring').split(',')[1];
+      
+      await sendInvoiceEmail(
+        emailToSend,
+        invoice.clientName,
+        { ...invoice, id, total: invoiceTotal },
+        pdfBase64
+      );
+      
+      // Update invoice status if Pending
+      if (invoice.status === "Pending") {
+        await updateDoc(doc(db, "invoices", id), {
+          status: "Sent",
+          emailSentAt: new Date().toISOString(),
+          emailSentTo: emailToSend,
+        });
+        setInvoice({ ...invoice, status: "Sent" });
+      } else {
+        // Just log the email send
+        await updateDoc(doc(db, "invoices", id), {
+          emailSentAt: new Date().toISOString(),
+          emailSentTo: emailToSend,
+        });
+      }
+      
+      Swal.fire({
+        icon: 'success',
+        title: 'Email Sent!',
+        html: `Invoice sent to <strong>${emailToSend}</strong>`,
+        timer: 3000,
+        showConfirmButton: false,
+      });
+      
+    } catch (error) {
+      console.error("Error sending email:", error);
+      Swal.fire({
+        icon: 'error',
+        title: 'Email Failed',
+        text: error.message || 'Could not send email. Check Gmail settings.',
+      });
+    } finally {
+      setSending(false);
+    }
+  };
+
   if (loading) {
     return (
       <Container sx={{ mt: 4, textAlign: "center" }}>
@@ -460,37 +874,13 @@ const InvoiceEditor = () => {
             Client Information
           </Typography>
           <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
-            <Autocomplete
-              freeSolo
-              options={customers}
-              getOptionLabel={(option) =>
-                typeof option === "string" ? option : option.name || ""
-              }
+            <TextField
+              label="Client Name"
+              name="clientName"
               value={invoice.clientName || ""}
-              onInputChange={(e, newValue) => {
-                setInvoice({ ...invoice, clientName: newValue });
-              }}
-              onChange={(e, selectedCustomer) => {
-                if (selectedCustomer && typeof selectedCustomer === "object") {
-                  setInvoice({
-                    ...invoice,
-                    clientName: selectedCustomer.name || "",
-                    clientEmail: selectedCustomer.email || "",
-                    clientPhone: selectedCustomer.phone || "",
-                    clientAddress: selectedCustomer.address || "",
-                    customerId: selectedCustomer.id || "",
-                  });
-                }
-              }}
-              renderInput={(params) => (
-                <TextField
-                  {...params}
-                  label="Client Name"
-                  required
-                  fullWidth
-                  helperText="Type or select from customers to auto-fill email, phone & address"
-                />
-              )}
+              onChange={handleChange}
+              fullWidth
+              required
             />
 
             <TextField
@@ -939,7 +1329,14 @@ const InvoiceEditor = () => {
           )}
         </Paper>
 
-        <Box sx={{ display: "flex", gap: 2, mt: 2 }}>
+        {/* Email sent status */}
+        {invoice.emailSentAt && (
+          <Alert severity="success" icon={<EmailIcon />} sx={{ mt: 2 }}>
+            Invoice emailed to <strong>{invoice.emailSentTo}</strong> on {new Date(invoice.emailSentAt).toLocaleString()}
+          </Alert>
+        )}
+
+        <Box sx={{ display: "flex", gap: 2, mt: 2, flexDirection: { xs: 'column', sm: 'row' } }}>
           <Button 
             variant="contained" 
             onClick={handleSave} 
@@ -948,6 +1345,24 @@ const InvoiceEditor = () => {
             size="large"
           >
             {saving ? "Saving..." : "Save Changes"}
+          </Button>
+          <Button 
+            variant="contained"
+            color="success"
+            onClick={handleEmailToCustomer}
+            disabled={sending}
+            size="large"
+            startIcon={<EmailIcon />}
+          >
+            {sending ? "Sending..." : "Email to Customer"}
+          </Button>
+          <Button 
+            variant="outlined"
+            color="primary"
+            onClick={handleGeneratePDF}
+            size="large"
+          >
+            Download PDF
           </Button>
           <Button 
             variant="outlined" 

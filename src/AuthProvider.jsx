@@ -126,20 +126,16 @@ export const AuthProvider = ({ children }) => {
     );
   }
 
-  // ✅ Allow public routes WITHOUT authentication
-  // Clients access these pages via email/SMS links - no login required
-  const isPublicRoute = 
-    window.location.pathname.startsWith('/sign-bid/') ||
-    window.location.pathname.startsWith('/public/sign/') ||
-    window.location.pathname.startsWith('/public/pay/') ||
-    window.location.pathname.startsWith('/public/nda/');
+  // ✅ Phase 3 Fix: Allow public pages WITHOUT login
+  // Public pages include signing pages, payment portal, NDA signing
+  const isPublicPage = window.location.pathname.startsWith('/public/');
 
-  // Show login screen if not authenticated AND not on a public route
-  if (!user && !isPublicRoute) {
+  // Show login screen if not authenticated AND not on a public page
+  if (!user && !isPublicPage) {
     return <Login onLoginSuccess={(user) => setUser(user)} />;
   }
 
-  // User is authenticated OR on a public route - show app
+  // User is authenticated OR on a public page - show app
   return (
     <AuthContext.Provider value={value}>
       {children}

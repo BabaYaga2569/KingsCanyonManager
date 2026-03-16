@@ -208,22 +208,6 @@ export default function MyHours() {
                       {entry.hoursWorked ? `${entry.hoursWorked}h` : 'In Progress'}
                     </Typography>
 
-                    {/* Lunch Break */}
-                    {entry.lunchMinutes > 0 ? (
-                      <Box sx={{ mt: 1, p: 1, backgroundColor: '#fff8e1', borderRadius: 1, border: '1px solid #ffe082' }}>
-                        <Typography variant="body2" color="warning.dark" fontWeight="bold">
-                          🍔 Lunch: {entry.lunchMinutes} min
-                        </Typography>
-                        <Typography variant="caption" color="text.secondary">
-                          {entry.lunchStartTime ? moment(entry.lunchStartTime).format('h:mm A') : '?'} – {entry.lunchEndTime ? moment(entry.lunchEndTime).format('h:mm A') : '?'}
-                        </Typography>
-                      </Box>
-                    ) : (
-                      <Typography variant="caption" color="text.disabled" sx={{ mt: 1, display: 'block' }}>
-                        🚫 No lunch break recorded
-                      </Typography>
-                    )}
-
                     {entry.rejectionReason && (
                       <Typography variant="caption" color="error" sx={{ mt: 1, display: 'block' }}>
                         Reason: {entry.rejectionReason}
@@ -244,14 +228,13 @@ export default function MyHours() {
                   <TableCell>Clock In</TableCell>
                   <TableCell>Clock Out</TableCell>
                   <TableCell>Hours</TableCell>
-                  <TableCell>Lunch Break</TableCell>
                   <TableCell>Status</TableCell>
                 </TableRow>
               </TableHead>
               <TableBody>
                 {timeEntries.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={7} align="center">
+                    <TableCell colSpan={6} align="center">
                       <Typography color="text.secondary">No time entries yet</Typography>
                     </TableCell>
                   </TableRow>
@@ -270,22 +253,6 @@ export default function MyHours() {
                         <Typography fontWeight="bold" color="primary">
                           {entry.hoursWorked ? `${entry.hoursWorked}h` : '--'}
                         </Typography>
-                      </TableCell>
-                      <TableCell>
-                        {entry.lunchMinutes > 0 ? (
-                          <Box>
-                            <Typography variant="body2" color="warning.dark" fontWeight="bold">
-                              🍔 {entry.lunchMinutes} min
-                            </Typography>
-                            <Typography variant="caption" color="text.secondary" display="block">
-                              {entry.lunchStartTime ? moment(entry.lunchStartTime).format('h:mm A') : '?'} – {entry.lunchEndTime ? moment(entry.lunchEndTime).format('h:mm A') : '?'}
-                            </Typography>
-                          </Box>
-                        ) : (
-                          <Typography variant="body2" color="text.disabled">
-                            🚫 None
-                          </Typography>
-                        )}
                       </TableCell>
                       <TableCell>
                         {getStatusChip(entry.status)}

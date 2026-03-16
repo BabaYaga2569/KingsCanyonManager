@@ -42,11 +42,10 @@ import {
   Checkbox,
   FormControlLabel,
   Alert,
+  LinearProgress,
 } from "@mui/material";
 import { useNavigate, useLocation } from "react-router-dom";
 import Swal from "sweetalert2";
-import { notifyInvoicePaid } from "./pushoverNotificationService";
-import { emailInvoiceDueReminder } from "./emailNotificationService";
 import EditIcon from "@mui/icons-material/Edit";
 import PictureAsPdfIcon from "@mui/icons-material/PictureAsPdf";
 import DeleteIcon from "@mui/icons-material/Delete";
@@ -61,8 +60,6 @@ import moment from "moment";
 import generateInvoicePDF from "./pdf/generateInvoicePDF";
 import { markAsViewed } from './useNotificationCounts';
 import { useAuth } from './AuthProvider';
-import DownloadIcon from "@mui/icons-material/Download";
-import { exportInvoicesToExcel } from './utils/exportUtils';
 
 export default function InvoicesDashboard() {
   const { user } = useAuth();
@@ -127,7 +124,28 @@ export default function InvoicesDashboard() {
     try {
       const snap = await getDocs(collection(db, "invoices"));
       const data = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-      setInvoices(data);
+      
+      // Load all payments and attach totals to each invoice
+      const paymentsSnap = await getDocs(collection(db, "payments"));
+      const allPayments = paymentsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      
+      const invoicesWithPayments = data.map((inv) => {
+        const invoicePayments = allPayments.filter((p) => p.invoiceId === inv.id);
+        const totalPaid = invoicePayments.reduce((sum, p) => sum + parseFloat(p.amount || 0), 0);
+        const invoiceTotal = parseFloat(inv.total || inv.amount || 0);
+        const remainingBalance = invoiceTotal - totalPaid;
+        const paymentCount = invoicePayments.length;
+        
+        return {
+          ...inv,
+          _totalPaid: totalPaid,
+          _remainingBalance: remainingBalance,
+          _paymentCount: paymentCount,
+          _percentPaid: invoiceTotal > 0 ? Math.min((totalPaid / invoiceTotal) * 100, 100) : 0,
+        };
+      });
+      
+      setInvoices(invoicesWithPayments);
     } catch (err) {
       console.error("Error loading invoices:", err);
     }
@@ -153,6 +171,16 @@ export default function InvoicesDashboard() {
   useEffect(() => {
     markAsViewed('invoices');
   }, []);
+  
+  // Auto-open weed dialog if quickWeed=true query parameter is present
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    if (params.get('quickWeed') === 'true') {
+      setWeedDialogOpen(true);
+      // Clean up the query parameter to prevent dialog from reopening on refresh/back
+      navigate('/invoices', { replace: true });
+    }
+  }, [location.search, navigate]);
 
   // Helper function to convert Firebase Timestamp to JavaScript Date
   const getDateFromInvoice = (invoice) => {
@@ -233,14 +261,14 @@ export default function InvoicesDashboard() {
     setSortedInvoices(sorted);
   }, [invoices, sortOrder]);
 
-  const handleStatusChange = async (id, newStatus) => {
+    const handleStatusChange = async (id, newStatus) => {
     try {
       const ref = doc(db, "invoices", id);
       const invoiceSnap = await getDoc(ref);
       const invoiceData = invoiceSnap.data();
       const oldStatus = invoiceData.status;
       
-      // âœ… AUTO-HANDLE: When changing to "Paid"
+      // ✅ AUTO-HANDLE: When changing to "Paid"
       if (newStatus === "Paid" && oldStatus !== "Paid") {
         const total = parseFloat(invoiceData.total || invoiceData.amount || 0);
         
@@ -251,36 +279,70 @@ export default function InvoicesDashboard() {
         );
         const paymentsSnap = await getDocs(paymentsQuery);
         
-        // Create payment record if none exists
         if (paymentsSnap.empty) {
+          // Lookup customerId if not present on invoice
+          let customerId = invoiceData.customerId || null;
+          if (!customerId && invoiceData.clientName) {
+            try {
+              const customersQuery = query(
+                collection(db, 'customers'),
+                where('name', '==', invoiceData.clientName)
+              );
+              const customersSnap = await getDocs(customersQuery);
+              if (!customersSnap.empty) {
+                customerId = customersSnap.docs[0].id;
+              }
+            } catch (err) {
+              console.warn('Failed to lookup customer by name:', err);
+            }
+          }
+
+          // Auto-create payment record
           await addDoc(collection(db, "payments"), {
             invoiceId: id,
             clientName: invoiceData.clientName,
+            customerId: customerId,
             amount: total,
             paymentMethod: "other",
-            paymentDate: moment().format("YYYY-MM-DD"),
-            reference: "Auto-generated from invoice status change",
-            notes: "Automatically created when invoice marked as Paid",
+            paymentDate: new Date().toISOString().split("T")[0],
+            reference: "Auto-generated from status change",
+            notes: "Created when invoice marked as Paid from dashboard",
             receiptGenerated: false,
             createdAt: new Date().toISOString(),
           });
-          console.log("âœ… Auto-created payment record for tax reporting");
         }
-        
-        // Auto-complete related job
+
+        // ✅ Auto-complete the related job if it exists
         if (invoiceData.jobId) {
           try {
             const jobRef = doc(db, "jobs", invoiceData.jobId);
             const jobSnap = await getDoc(jobRef);
+            
             if (jobSnap.exists()) {
               await updateDoc(jobRef, {
                 status: "Completed",
                 completedDate: new Date().toISOString(),
               });
-              console.log("âœ… Auto-completed related job");
             }
           } catch (jobError) {
             console.warn("Could not auto-complete job:", jobError);
+          }
+        }
+
+        // ✅ Phase 2C Fix 5: Update customer lifetime value
+        if (invoiceData.customerId) {
+          try {
+            const customerRef = doc(db, "customers", invoiceData.customerId);
+            const customerSnap = await getDoc(customerRef);
+            if (customerSnap.exists()) {
+              const currentValue = parseFloat(customerSnap.data().lifetimeValue || 0);
+              await updateDoc(customerRef, {
+                lifetimeValue: currentValue + total,
+              });
+              console.log("✅ Updated customer lifetime value:", currentValue + total);
+            }
+          } catch (custError) {
+            console.warn("Could not update customer lifetime value:", custError);
           }
         }
         
@@ -291,15 +353,6 @@ export default function InvoicesDashboard() {
           remainingBalance: 0,
           paymentStatus: "paid",
         });
-
-        // Notify admin via Pushover
-        try {
-          await notifyInvoicePaid(
-            invoiceData.clientName || "Customer",
-            total,
-            invoiceData.paymentMethod || null
-          );
-        } catch (e) { console.error("Pushover error:", e); }
       } else {
         // Normal status update
         await updateDoc(ref, { status: newStatus });
@@ -316,32 +369,6 @@ export default function InvoicesDashboard() {
   };
 
   // ===================== QUICK WEED INVOICE HANDLERS =====================
-
-  // Send invoice due reminder email to customer
-  const handleSendDueReminder = async (invoice) => {
-    if (!invoice.clientEmail) {
-      Swal.fire("No Email", "This customer doesn't have an email address on file.", "warning");
-      return;
-    }
-    try {
-      const dueDate = invoice.dueDate || invoice.due_date || null;
-      const daysUntilDue = dueDate
-        ? Math.ceil((new Date(dueDate) - new Date()) / (1000 * 60 * 60 * 24))
-        : 3;
-      await emailInvoiceDueReminder(
-        invoice.clientEmail,
-        invoice.clientName,
-        invoice.total || invoice.amount,
-        dueDate,
-        invoice.description || invoice.jobDescription || "Landscaping services",
-        daysUntilDue
-      );
-      Swal.fire("Reminder Sent!", `Payment reminder emailed to ${invoice.clientEmail}`, "success");
-    } catch (e) {
-      console.error("EmailJS error:", e);
-      Swal.fire("Error", "Failed to send reminder email.", "error");
-    }
-  };
   
   const calculateWeedTotal = () => {
     let total = 0;
@@ -490,6 +517,7 @@ export default function InvoicesDashboard() {
 
       await addDoc(collection(db, "schedules"), {
         clientName: customer.name,
+		customerId: customer.id,  // ← ADD THIS LINE
         jobDescription: description,
         startDate: weedInvoice.serviceDate,
         endDate: weedInvoice.serviceDate,
@@ -530,21 +558,7 @@ export default function InvoicesDashboard() {
         createdAt: serverTimestamp(),
         completedAt: serverTimestamp(),
       });
-
-      await addDoc(collection(db, "schedules"), {
-        clientName: customer.name,
-        jobDescription: description,
-        startDate: weedInvoice.serviceDate,
-        endDate: weedInvoice.serviceDate,
-        startTime: weedInvoice.startTime,
-        endTime: weedInvoice.endTime,
-        priority: "normal",
-        status: "completed",
-        assignedEmployees: selectedCrews.map(c => c.id),
-        selectedEquipment: [],
-        notes: "Quick weed spraying job - auto-created from invoice",
-        createdAt: serverTimestamp(),
-      });       
+      
 
       // Success!
       const photoMessage = beforePhotoURL && afterPhotoURL 
@@ -927,15 +941,6 @@ export default function InvoicesDashboard() {
             {isMobile ? <SpeedIcon /> : "Quick Weed Invoice"}
           </Button>
 
-          <Button
-            variant="outlined"
-            startIcon={<DownloadIcon />}
-            onClick={() => exportInvoicesToExcel(filteredInvoices)}
-            sx={{ fontWeight: "bold" }}
-          >
-            {isMobile ? <DownloadIcon /> : "Export Excel"}
-          </Button>
-
           <FormControl size="small" sx={{ minWidth: 150 }}>
             <InputLabel>Year</InputLabel>
             <Select
@@ -1011,6 +1016,36 @@ export default function InvoicesDashboard() {
                 ðŸ“… Created: {formatInvoiceDate(inv)}
               </Typography>
 
+              {/* Payment Progress */}
+              {inv._paymentCount > 0 && (
+                <Box sx={{ mb: 2, p: 1.5, bgcolor: inv._remainingBalance <= 0 ? '#e8f5e9' : '#fff3e0', borderRadius: 1, border: `1px solid ${inv._remainingBalance <= 0 ? '#4caf50' : '#ff9800'}` }}>
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
+                    <Typography variant="caption" fontWeight="bold">
+                      💰 {inv._paymentCount} payment{inv._paymentCount !== 1 ? 's' : ''} received
+                    </Typography>
+                    <Typography variant="caption" fontWeight="bold" color={inv._remainingBalance <= 0 ? 'success.main' : 'warning.main'}>
+                      {inv._remainingBalance <= 0 ? '✅ PAID IN FULL' : `$${inv._remainingBalance.toFixed(2)} remaining`}
+                    </Typography>
+                  </Box>
+                  <LinearProgress 
+                    variant="determinate" 
+                    value={inv._percentPaid} 
+                    sx={{ 
+                      height: 8, 
+                      borderRadius: 4,
+                      bgcolor: '#e0e0e0',
+                      '& .MuiLinearProgress-bar': {
+                        bgcolor: inv._percentPaid >= 100 ? '#4caf50' : '#ff9800',
+                        borderRadius: 4,
+                      }
+                    }} 
+                  />
+                  <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: 'block' }}>
+                    ${inv._totalPaid.toFixed(2)} of ${parseFloat(inv.total || inv.amount || 0).toFixed(2)} ({inv._percentPaid.toFixed(0)}%)
+                  </Typography>
+                </Box>
+              )}
+
               <FormControl fullWidth size="small" sx={{ mb: 2 }}>
                 <InputLabel>Change Status</InputLabel>
                 <Select
@@ -1057,17 +1092,6 @@ export default function InvoicesDashboard() {
               >
                 Edit Invoice
               </Button>
-              {inv.status !== "Paid" && inv.clientEmail && (
-                <Button
-                  variant="outlined"
-                  color="warning"
-                  size="small"
-                  onClick={() => handleSendDueReminder(inv)}
-                  fullWidth
-                >
-                  📧 Send Reminder
-                </Button>
-              )}
               <Button
                 variant="outlined"
                 color="error"
@@ -1117,24 +1141,54 @@ export default function InvoicesDashboard() {
                 <TableCell>${inv.total || inv.amount || 0}</TableCell>
                 <TableCell>{formatInvoiceDate(inv)}</TableCell>
                 <TableCell>
-                  <Chip
-                    label={inv.status || "Pending"}
-                    color={getColor(inv.status)}
-                    sx={{ fontWeight: "bold", mr: 1 }}
-                  />
-                  <Select
-                    size="small"
-                    value={inv.status || "Pending"}
-                    onChange={(e) =>
-                      handleStatusChange(inv.id, e.target.value)
-                    }
-                  >
-                    <MenuItem value="Pending">Pending</MenuItem>
-                    <MenuItem value="Sent">Sent</MenuItem>
-                    <MenuItem value="Making Payments">Making Payments</MenuItem>
-                    <MenuItem value="Paid">Paid</MenuItem>
-                    <MenuItem value="Overdue">Overdue</MenuItem>
-                  </Select>
+                  <Box>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: inv._paymentCount > 0 ? 1 : 0 }}>
+                      <Chip
+                        label={inv.status || "Pending"}
+                        color={getColor(inv.status)}
+                        sx={{ fontWeight: "bold" }}
+                      />
+                      <Select
+                        size="small"
+                        value={inv.status || "Pending"}
+                        onChange={(e) =>
+                          handleStatusChange(inv.id, e.target.value)
+                        }
+                        sx={{ minWidth: 120 }}
+                      >
+                        <MenuItem value="Pending">Pending</MenuItem>
+                        <MenuItem value="Sent">Sent</MenuItem>
+                        <MenuItem value="Making Payments">Making Payments</MenuItem>
+                        <MenuItem value="Paid">Paid</MenuItem>
+                        <MenuItem value="Overdue">Overdue</MenuItem>
+                      </Select>
+                    </Box>
+                    {inv._paymentCount > 0 && (
+                      <Box sx={{ minWidth: 180 }}>
+                        <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
+                          <Typography variant="caption" fontWeight="bold">
+                            💰 {inv._paymentCount} payment{inv._paymentCount !== 1 ? 's' : ''}
+                          </Typography>
+                          <Typography variant="caption" fontWeight="bold" color={inv._remainingBalance <= 0 ? 'success.main' : 'warning.main'}>
+                            {inv._remainingBalance <= 0 ? '✅ Paid' : `$${inv._remainingBalance.toFixed(2)} left`}
+                          </Typography>
+                        </Box>
+                        <LinearProgress 
+                          variant="determinate" 
+                          value={inv._percentPaid} 
+                          sx={{ 
+                            height: 6, 
+                            borderRadius: 3,
+                            bgcolor: '#e0e0e0',
+                            '& .MuiLinearProgress-bar': {
+                              bgcolor: inv._percentPaid >= 100 ? '#4caf50' : '#ff9800',
+                              borderRadius: 3,
+                            }
+                          }} 
+                        />
+                      </Box>
+                    )}
+                  </Box>
                 </TableCell>
                 <TableCell align="right">
                   <Button

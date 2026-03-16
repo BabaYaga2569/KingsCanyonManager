@@ -8,6 +8,8 @@ const COMPANY = {
   email: "kingscanyon775@gmail.com",
 };
 
+const PAYMENT_BASE_URL = "https://kcl-manager-test.web.app/public/pay";
+
 /**
  * Generate a professional invoice PDF with optional material breakdown
  * @param {object} invoice - The invoice object from Firestore
@@ -20,7 +22,6 @@ export default async function generateInvoicePDF(invoice, expenses = [], include
   const W = doc.internal.pageSize.getWidth();
   const H = doc.internal.pageSize.getHeight();
 
-  // Get logo if provided
   const logoDataUrl = invoice.logoDataUrl;
 
   // ============================================
@@ -67,7 +68,7 @@ export default async function generateInvoicePDF(invoice, expenses = [], include
 
   // Bill To section
   let y = 156;
-  
+
   doc.setFont("helvetica", "bold");
   doc.setFontSize(12);
   doc.text("Bill To:", 40, y);
@@ -75,24 +76,20 @@ export default async function generateInvoicePDF(invoice, expenses = [], include
 
   doc.setFont("helvetica", "normal");
   doc.setFontSize(11);
-  
-  // Client name
+
   doc.text(invoice.clientName || "Client Name", 40, y);
   y += 16;
 
-  // Client email (if provided)
   if (invoice.clientEmail) {
     doc.text(invoice.clientEmail, 40, y);
     y += 16;
   }
 
-  // Client phone (if provided)
   if (invoice.clientPhone) {
     doc.text(invoice.clientPhone, 40, y);
     y += 16;
   }
 
-  // Client address (if provided)
   if (invoice.clientAddress) {
     const lines = doc.splitTextToSize(invoice.clientAddress, 220);
     doc.text(lines, 40, y);
@@ -134,30 +131,24 @@ export default async function generateInvoicePDF(invoice, expenses = [], include
   const tax = parseFloat(invoice.tax || 0);
   const total = subtotal + tax;
 
-  const tableStartY = y;
   const tableX = W - 280;
   const colWidth = 120;
 
   doc.setDrawColor(200);
   doc.setLineWidth(0.5);
 
-  // Subtotal
   doc.setFont("helvetica", "normal");
   doc.text("Subtotal:", tableX, y);
   doc.text(`$${subtotal.toFixed(2)}`, tableX + colWidth, y, { align: "right" });
   y += 20;
 
-  // Tax (if any)
   if (tax > 0) {
-    const taxLabel = invoice.taxRate 
-      ? `Tax (${invoice.taxRate}%):`
-      : "Tax:";
+    const taxLabel = invoice.taxRate ? `Tax (${invoice.taxRate}%):` : "Tax:";
     doc.text(taxLabel, tableX, y);
     doc.text(`$${tax.toFixed(2)}`, tableX + colWidth, y, { align: "right" });
     y += 20;
   }
 
-  // Total line
   doc.line(tableX, y - 5, tableX + colWidth + 10, y - 5);
   doc.setFont("helvetica", "bold");
   doc.setFontSize(13);
@@ -165,16 +156,13 @@ export default async function generateInvoicePDF(invoice, expenses = [], include
   doc.text(`$${total.toFixed(2)}`, tableX + colWidth, y + 4, { align: "right" });
   y += 30;
 
-  // Payment status (if any)
   if (invoice.status) {
     doc.setFont("helvetica", "normal");
     doc.setFontSize(10);
-    const statusUpper = invoice.status.toUpperCase();
-    doc.text(`Status: ${statusUpper}`, tableX, y);
+    doc.text(`Status: ${invoice.status.toUpperCase()}`, tableX, y);
     y += 16;
   }
 
-  // Notes / Payment Instructions (if any)
   if (invoice.notes) {
     y += 30;
     doc.setFont("helvetica", "bold");
@@ -186,18 +174,49 @@ export default async function generateInvoicePDF(invoice, expenses = [], include
     doc.setFontSize(10);
     const notesLines = doc.splitTextToSize(invoice.notes, W - 100);
     doc.text(notesLines, 40, y);
+    y += notesLines.length * 14;
+  }
+
+  // ── PAYMENT LINK SECTION ──
+  if (invoice.id) {
+    const payUrl = `${PAYMENT_BASE_URL}/${invoice.id}`;
+    const boxY = H - 130;
+    const boxH = 52;
+
+    // Shaded background box
+    doc.setFillColor(240, 247, 255);
+    doc.setDrawColor(21, 101, 192);
+    doc.setLineWidth(1);
+    doc.roundedRect(40, boxY, W - 80, boxH, 4, 4, "FD");
+
+    // Label
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(10);
+    doc.setTextColor(21, 101, 192);
+    doc.text(">> Pay Online:", 52, boxY + 18);
+
+    // Clickable URL
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9.5);
+    doc.setTextColor(21, 101, 192);
+    doc.textWithLink(payUrl, 52, boxY + 36, { url: payUrl });
+
+    // Underline the link manually
+    const linkWidth = doc.getTextWidth(payUrl);
+    doc.setDrawColor(21, 101, 192);
+    doc.setLineWidth(0.5);
+    doc.line(52, boxY + 38, 52 + linkWidth, boxY + 38);
+
+    // Reset colors
+    doc.setTextColor(0);
+    doc.setDrawColor(60);
   }
 
   // Footer
   const footerY = H - 56;
   doc.setFontSize(9);
   doc.setTextColor(100);
-  doc.text(
-    "Thank you for your business!",
-    W / 2,
-    footerY,
-    { align: "center" }
-  );
+  doc.text("Thank you for your business!", W / 2, footerY, { align: "center" });
 
   // ============================================
   // PAGE 2: MATERIAL BREAKDOWN (Optional)
@@ -206,12 +225,11 @@ export default async function generateInvoicePDF(invoice, expenses = [], include
   if (includeMaterialBreakdown && expenses.length > 0) {
     doc.addPage();
 
-    // Header
     doc.setTextColor(0);
     doc.setFont("helvetica", "bold");
     doc.setFontSize(18);
     doc.text(COMPANY.name, W / 2, 60, { align: "center" });
-    
+
     doc.setFontSize(16);
     doc.text("MATERIAL COST BREAKDOWN", W / 2, 85, { align: "center" });
 
@@ -223,7 +241,6 @@ export default async function generateInvoicePDF(invoice, expenses = [], include
 
     let materialY = 150;
 
-    // Intro text
     doc.setTextColor(0);
     doc.setFontSize(11);
     const introText = doc.splitTextToSize(
@@ -235,46 +252,32 @@ export default async function generateInvoicePDF(invoice, expenses = [], include
     doc.text(introText, 50, materialY);
     materialY += introText.length * 16 + 20;
 
-    // Category breakdown
-    const materialExpenses = expenses.filter(e => 
+    const materialExpenses = expenses.filter(e =>
       e.category === 'materials' || e.category === 'supplies'
     );
 
     if (materialExpenses.length > 0) {
-      // Build table data
       const tableData = materialExpenses
         .sort((a, b) => new Date(a.date) - new Date(b.date))
-        .map(expense => {
-          const row = [
-            new Date(expense.date).toLocaleDateString(),
-            expense.vendor || '',
-            expense.description || '',
-            `$${parseFloat(expense.amount || 0).toFixed(2)}`,
-          ];
+        .map(expense => [
+          new Date(expense.date).toLocaleDateString(),
+          expense.vendor || '',
+          expense.description || '',
+          `$${parseFloat(expense.amount || 0).toFixed(2)}`,
+        ]);
 
-          return row;
-        });
-
-      // Add materials table
       autoTable(doc, {
         startY: materialY,
         head: [['Date', 'Vendor', 'Description', 'Amount']],
         body: tableData,
         foot: [[
-          '', 
-          '', 
-          'Total Material Costs:', 
+          '', '',
+          'Total Material Costs:',
           `$${materialExpenses.reduce((sum, e) => sum + parseFloat(e.amount || 0), 0).toFixed(2)}`
         ]],
         theme: 'striped',
-        headStyles: { 
-          fillColor: [41, 128, 185],
-          fontStyle: 'bold',
-        },
-        footStyles: { 
-          fillColor: [52, 73, 94],
-          fontStyle: 'bold',
-        },
+        headStyles: { fillColor: [41, 128, 185], fontStyle: 'bold' },
+        footStyles: { fillColor: [52, 73, 94], fontStyle: 'bold' },
         columnStyles: {
           0: { cellWidth: 80 },
           1: { cellWidth: 120 },
@@ -286,13 +289,11 @@ export default async function generateInvoicePDF(invoice, expenses = [], include
 
       materialY = doc.lastAutoTable.finalY + 30;
 
-      // Itemized receipts (if any have line items)
-      const itemizedExpenses = materialExpenses.filter(e => 
+      const itemizedExpenses = materialExpenses.filter(e =>
         e.lineItems && e.lineItems.length > 0
       );
 
       if (itemizedExpenses.length > 0) {
-        // Check if we need a new page
         if (materialY > H - 200) {
           doc.addPage();
           materialY = 60;
@@ -304,7 +305,6 @@ export default async function generateInvoicePDF(invoice, expenses = [], include
         materialY += 20;
 
         itemizedExpenses.forEach(expense => {
-          // Check if we need a new page
           if (materialY > H - 150) {
             doc.addPage();
             materialY = 60;
@@ -314,8 +314,7 @@ export default async function generateInvoicePDF(invoice, expenses = [], include
           doc.setFontSize(11);
           doc.text(
             `${expense.vendor} - ${new Date(expense.date).toLocaleDateString()}`,
-            50,
-            materialY
+            50, materialY
           );
           materialY += 15;
 
@@ -348,7 +347,6 @@ export default async function generateInvoicePDF(invoice, expenses = [], include
       }
     }
 
-    // Footer note
     doc.setFontSize(9);
     doc.setTextColor(100);
     const footerNote = "All costs listed are actual vendor charges. Invoice total includes materials, labor, equipment, and overhead.";

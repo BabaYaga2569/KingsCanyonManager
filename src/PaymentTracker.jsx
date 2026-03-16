@@ -141,10 +141,28 @@ export default function PaymentTracker() {
     }
 
     try {
+      // Lookup customerId if not present on invoice
+      let customerId = invoice.customerId || null;
+      if (!customerId && invoice.clientName) {
+        try {
+          const customersQuery = query(
+            collection(db, 'customers'),
+            where('name', '==', invoice.clientName)
+          );
+          const customersSnap = await getDocs(customersQuery);
+          if (!customersSnap.empty) {
+            customerId = customersSnap.docs[0].id;
+          }
+        } catch (err) {
+          console.warn('Failed to lookup customer by name:', err);
+        }
+      }
+
       // Create payment record
       const paymentData = {
         invoiceId: id,
         clientName: invoice.clientName,
+        customerId: customerId,
         amount: paymentAmount,
         paymentMethod: paymentForm.paymentMethod,
         paymentDate: paymentForm.paymentDate,

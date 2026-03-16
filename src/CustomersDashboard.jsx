@@ -21,9 +21,7 @@ import Swal from "sweetalert2";
 import PersonAddIcon from "@mui/icons-material/PersonAdd";
 import VisibilityIcon from "@mui/icons-material/Visibility";
 import SortIcon from "@mui/icons-material/Sort";
-import DownloadIcon from "@mui/icons-material/Download";
 import { markAsViewed } from './useNotificationCounts';
-import { exportCustomersToExcel } from './utils/exportUtils';
 
 export default function CustomersDashboard() {
   const [customers, setCustomers] = useState([]);
@@ -141,15 +139,6 @@ export default function CustomersDashboard() {
               <MenuItem value="recent">Most Recent</MenuItem>
             </Select>
           </FormControl>
-
-          <Button
-            variant="outlined"
-            startIcon={<DownloadIcon />}
-            onClick={() => exportCustomersToExcel(sortedCustomers)}
-            sx={{ display: { xs: 'none', sm: 'inline-flex' } }}
-          >
-            Export Excel
-          </Button>
 
           <Button
             variant="contained"

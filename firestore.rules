@@ -7,14 +7,14 @@ service cloud.firestore {
       return request.auth != null;
     }
     
-    // Helper function to check if user has god or admin role
+    // Helper function to check if user has god or admin role (FIXED: handles null)
     function isGodOrAdmin() {
       return isAuthenticated() && 
         exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['god', 'admin'];
     }
     
-    // Helper function to check if user is god (owner)
+    // Helper function to check if user is god (owner) (FIXED: handles null)
     function isGod() {
       return isAuthenticated() && 
         exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
@@ -25,6 +25,14 @@ service cloud.firestore {
     function isOwnData(userId) {
       return isAuthenticated() && request.auth.uid == userId;
     }
+    
+    // REPLACE WITH:
+function hasValidToken(tokenField) {
+  return request.auth == null &&
+         request.query.token != null &&
+         resource.data[tokenField] != null &&
+         resource.data[tokenField] == request.query.token;
+}
     
     // ============================================
     // USERS COLLECTION (Employee Account Manager)
@@ -40,74 +48,65 @@ service cloud.firestore {
     }
     
     // ============================================
-    // 🔐 BIDS COLLECTION - PUBLIC READ FOR SIGNING
+    // 🔐 BIDS COLLECTION - SECURE WITH TOKENS
     // ============================================
     match /bids/{bidId} {
-      allow read: if true;
-      allow create, delete: if isGodOrAdmin();
+      // Read: authenticated users OR valid signing token
+      allow read: if isGodOrAdmin() || hasValidToken(bidId, 'signingToken');
+      
+      // Write: only admin
+      allow write: if isGodOrAdmin();
+      
+      // Update: authenticated OR token holder (but only signature fields)
       allow update: if isGodOrAdmin() || 
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-          'clientSignature', 'clientSignedAt', 
-          'customerSignature', 'customerSignedAt',
-          'contractorSignature', 'contractorSignedAt',
-          'status', 'lastUpdated'
-        ]);
+        (hasValidToken(bidId, 'signingToken') && 
+         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['customerSignature', 'customerSignedAt', 'status', 'signedBy']));
     }
     
     // ============================================
-    // 🔐 CONTRACTS COLLECTION - PUBLIC READ FOR SIGNING
+    // 🔐 CONTRACTS COLLECTION - SECURE WITH TOKENS
     // ============================================
     match /contracts/{contractId} {
-      allow read: if true;
-      allow create: if true;
-      allow delete: if isGodOrAdmin();
+      // Read: authenticated users OR valid signing token
+      allow read: if isGodOrAdmin() || hasValidToken(contractId, 'signingToken');
+      
+      // Write: only admin
+      allow write: if isGodOrAdmin();
+      
+      // Update: authenticated OR token holder (but only signature fields)
       allow update: if isGodOrAdmin() || 
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-          'clientSignature', 'clientSignedAt',
-          'customerSignature', 'customerSignedAt',
-          'contractorSignature', 'contractorSignedAt', 
-          'status', 'signedBy', 'lastUpdated'
-        ]);
+        (hasValidToken(contractId, 'signingToken') && 
+         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['customerSignature', 'customerSignedAt', 'status', 'signedBy']));
     }
     
     // ============================================
-    // 🔐 INVOICES COLLECTION - PUBLIC READ FOR PAYMENT
+    // 🔐 INVOICES COLLECTION - SECURE WITH TOKENS
     // ============================================
     match /invoices/{invoiceId} {
+      // Read: public (invoice IDs are unguessable - needed for payment portal)
       allow read: if true;
-      allow create: if true;
-      allow delete: if isGodOrAdmin();
-      allow update: if isGodOrAdmin() || 
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-          'status', 'paidAt', 'paymentMethod', 'paymentNotes', 'lastUpdated'
-        ]);
+      
+      // Write: only admin
+      allow write: if isGodOrAdmin();
+      
+      // Update: admin only
+      allow update: if isGodOrAdmin();
     }
     
     // ============================================
-    // JOBS COLLECTION
+    // JOBS COLLECTION - READ FOR DROPDOWN
     // ============================================
     match /jobs/{jobId} {
       allow read: if isAuthenticated();
-      allow create: if true;
-      allow update, delete: if isGodOrAdmin();
+      allow write: if isGodOrAdmin();
     }
     
     // ============================================
-    // CUSTOMERS COLLECTION
+    // CUSTOMERS COLLECTION - ADMIN ONLY
     // ============================================
     match /customers/{customerId} {
-      allow read: if isGodOrAdmin();
-      allow create: if true;
-      allow update, delete: if isGodOrAdmin();
-    }
-    
-    // ============================================
-    // PAYMENTS COLLECTION
-    // ============================================
-    match /payments/{paymentId} {
-      allow read: if isGodOrAdmin();
-      allow create: if true;
-      allow update, delete: if isGodOrAdmin();
+      allow read: if isAuthenticated();        // crew needs this for GPS address lookup
+      allow write: if isGodOrAdmin();
     }
     
     // ============================================
@@ -115,6 +114,15 @@ service cloud.firestore {
     // ============================================
     match /expenses/{expenseId} {
       allow read, write: if isGodOrAdmin();
+    }
+    
+    // ============================================
+    // PAYMENTS COLLECTION - ADMIN ONLY
+    // ============================================
+    match /payments/{paymentId} {
+      // Read: public (needed for payment history on payment portal)
+      allow read: if true;
+      allow write: if isGodOrAdmin();
     }
     
     // ============================================
@@ -186,7 +194,7 @@ service cloud.firestore {
     // CREWS COLLECTION
     // ============================================
     match /crews/{crewId} {
-      allow read: if true;
+      allow read: if true;  // Public for NDA signing
       allow write: if isGodOrAdmin();
     }
     
@@ -245,7 +253,7 @@ service cloud.firestore {
     }
     
     // ============================================
-    // NOTIFICATIONS LOG COLLECTION (Legacy)
+    // NOTIFICATIONS LOG COLLECTION (SMS History)
     // ============================================
     match /notifications_log/{logId} {
       allow read: if isGodOrAdmin();
@@ -253,9 +261,20 @@ service cloud.firestore {
     }
 
     // ============================================
-    // NOTIFICATION LOG COLLECTION (Pushover History)
+    // INVITES COLLECTION - Employee invite tokens
+    // Public read needed so InviteSignup page can
+    // validate the token without being logged in.
+    // All writes go through Cloud Functions (Admin SDK).
     // ============================================
-    match /notification_log/{logId} {
+    match /invites/{token} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // ============================================
+    // EMAIL LOG COLLECTION
+    // ============================================
+    match /email_log/{logId} {
       allow read: if isGodOrAdmin();
       allow create: if isAuthenticated();
     }

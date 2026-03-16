@@ -102,6 +102,7 @@ export default function PaymentCollection() {
         contractId: invoice.contractId || "",
         jobId: invoice.jobId || "",
         customerName: invoice.clientName,
+        customerId: invoice.customerId || null,
         amount: parseFloat(amount),
         paymentMethod,
         ...details,

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { collection, getDocs, deleteDoc, doc, updateDoc, addDoc } from "firebase/firestore";
+import { collection, getDocs, deleteDoc, doc, updateDoc, addDoc, query, where } from "firebase/firestore";
 import { db } from "./firebase";
 import { generateSecureToken } from './utils/tokenUtils';
 import {
@@ -194,45 +194,64 @@ export default function MaintenanceDashboard() {
     }
   };
 
-  // Create a pending invoice for a maintenance contract and open it in the editor
   const handleCreateInvoice = async (contract) => {
     try {
-      Swal.fire({
-        title: 'Creating Invoice...',
-        allowOutsideClick: false,
-        didOpen: () => Swal.showLoading(),
-      });
+      // Lookup customerId if not present
+      let customerId = contract.customerId || null;
+      if (!customerId && contract.customerName) {
+        try {
+          const customersQuery = query(
+            collection(db, 'customers'),
+            where('name', '==', contract.customerName)
+          );
+          const customersSnap = await getDocs(customersQuery);
+          if (!customersSnap.empty) {
+            customerId = customersSnap.docs[0].id;
+          }
+        } catch (err) {
+          console.warn('Failed to lookup customer by name:', err);
+        }
+      }
+
+      // Build service description
+      const description = `Monthly Maintenance - ${getFrequencyDisplay(contract.frequency)}\n${contract.servicesIncluded || 'Standard maintenance service'}`;
 
       const invoiceData = {
-        customerId: contract.customerId || '',
+        customerId: customerId,
         clientName: contract.customerName,
         customerName: contract.customerName,
-        description: `Monthly Maintenance - ${getFrequencyDisplay(contract.frequency)}`,
+        clientAddress: contract.customerAddress || '',
+        clientPhone: contract.customerPhone || '',
+        clientEmail: contract.customerEmail || '',
+        description: description,
         lineItems: [{
           description: contract.servicesIncluded || 'Monthly maintenance service',
-          amount: parseFloat(contract.monthlyRate) || 0,
+          amount: parseFloat(contract.monthlyRate || 0)
         }],
-        subtotal: parseFloat(contract.monthlyRate) || 0,
+        subtotal: parseFloat(contract.monthlyRate || 0),
+        total: parseFloat(contract.monthlyRate || 0),
         tax: 0,
-        taxRate: 0,
-        total: parseFloat(contract.monthlyRate) || 0,
-        amount: parseFloat(contract.monthlyRate) || 0,
-        status: 'Pending',
+        status: 'Sent',
         invoiceDate: moment().format('YYYY-MM-DD'),
-        date: new Date().toISOString(),
         createdAt: new Date().toISOString(),
         maintenanceContractId: contract.id,
         type: 'maintenance',
         paymentToken: generateSecureToken(),
-        totalPaid: 0,
-        remainingBalance: parseFloat(contract.monthlyRate) || 0,
-        paymentStatus: 'unpaid',
       };
 
-      const docRef = await addDoc(collection(db, 'invoices'), invoiceData);
-      
-      Swal.close();
-      navigate(`/invoice/${docRef.id}`);
+      const invoiceRef = await addDoc(collection(db, 'invoices'), invoiceData);
+
+      Swal.fire({
+        icon: 'success',
+        title: 'Invoice Created!',
+        text: `$${contract.monthlyRate} invoice for ${contract.customerName}`,
+        timer: 2000,
+        showConfirmButton: false,
+      });
+
+      // Navigate to edit the new invoice
+      navigate(`/invoice/${invoiceRef.id}`);
+
     } catch (error) {
       console.error('Error creating maintenance invoice:', error);
       Swal.fire('Error', 'Failed to create invoice: ' + error.message, 'error');
@@ -258,9 +277,27 @@ export default function MaintenanceDashboard() {
     try {
       const contract = paymentDialog.contract;
       
+      // Lookup customerId if not present on contract
+      let customerId = contract.customerId || null;
+      if (!customerId && contract.customerName) {
+        try {
+          const customersQuery = query(
+            collection(db, 'customers'),
+            where('name', '==', contract.customerName)
+          );
+          const customersSnap = await getDocs(customersQuery);
+          if (!customersSnap.empty) {
+            customerId = customersSnap.docs[0].id;
+          }
+        } catch (err) {
+          console.warn('Failed to lookup customer by name:', err);
+        }
+      }
+      
       // Create payment record
       const paymentRecord = {
-        customerId: contract.customerId,
+        customerId: customerId,
+        clientName: contract.customerName,
         customerName: contract.customerName,
         amount: parseFloat(paymentData.amount),
         paymentMethod: paymentData.method,
@@ -277,7 +314,7 @@ export default function MaintenanceDashboard() {
       // Optionally create invoice
       if (paymentData.createInvoice) {
         const invoiceData = {
-          customerId: contract.customerId,
+          customerId: customerId,
           clientName: contract.customerName,
           customerName: contract.customerName,
           description: `Monthly Maintenance - ${getFrequencyDisplay(contract.frequency)}`,

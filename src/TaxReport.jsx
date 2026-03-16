@@ -21,6 +21,10 @@ import {
   Divider,
   Tabs,
   Tab,
+  Select,
+  MenuItem,
+  FormControl,
+  InputLabel,
 } from "@mui/material";
 import DownloadIcon from "@mui/icons-material/Download";
 import ReceiptIcon from "@mui/icons-material/Receipt";
@@ -33,6 +37,7 @@ export default function TaxReport() {
   const [expenses, setExpenses] = useState([]);
   const [payments, setPayments] = useState([]);
   const [activeTab, setActiveTab] = useState(0);
+  const [selectedYear, setSelectedYear] = useState("2026"); // Current year by default
   const [dateRange, setDateRange] = useState({
     startDate: "2025-10-01", // Business start date
     endDate: moment().format("YYYY-MM-DD"),
@@ -64,6 +69,15 @@ export default function TaxReport() {
   const getFilteredExpenses = () => {
     return expenses.filter((expense) => {
       const expenseDate = moment(expense.date);
+      
+      // Filter by selected year
+      if (selectedYear !== "all") {
+        const expenseYear = expenseDate.year();
+        if (expenseYear.toString() !== selectedYear) {
+          return false;
+        }
+      }
+      
       const inDateRange =
         expenseDate.isSameOrAfter(moment(dateRange.startDate)) &&
         expenseDate.isSameOrBefore(moment(dateRange.endDate));
@@ -74,6 +88,15 @@ export default function TaxReport() {
   const getFilteredPayments = () => {
     return payments.filter((payment) => {
       const paymentDate = moment(payment.paymentDate);
+      
+      // Filter by selected year
+      if (selectedYear !== "all") {
+        const paymentYear = paymentDate.year();
+        if (paymentYear.toString() !== selectedYear) {
+          return false;
+        }
+      }
+      
       return (
         paymentDate.isSameOrAfter(moment(dateRange.startDate)) &&
         paymentDate.isSameOrBefore(moment(dateRange.endDate))
@@ -217,6 +240,22 @@ export default function TaxReport() {
           Tax Year / Date Range
         </Typography>
         <Grid container spacing={2} alignItems="center">
+          <Grid item xs={12} sm={3}>
+            <FormControl fullWidth>
+              <InputLabel id="year-label">Tax Year</InputLabel>
+              <Select
+                labelId="year-label"
+                value={selectedYear}
+                label="Tax Year"
+                onChange={(e) => setSelectedYear(e.target.value)}
+              >
+                <MenuItem value="all">All Years</MenuItem>
+                <MenuItem value="2024">2024</MenuItem>
+                <MenuItem value="2025">2025</MenuItem>
+                <MenuItem value="2026">2026</MenuItem>
+              </Select>
+            </FormControl>
+          </Grid>
           <Grid item xs={12} sm={4}>
             <TextField
               label="Start Date"
