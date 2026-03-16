@@ -3,7 +3,7 @@ import { collection, getDocs, addDoc, deleteDoc, doc, updateDoc } from "firebase
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { db, storage } from "./firebase";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   Container,
   Typography,
@@ -173,6 +173,7 @@ export default function ExpensesManager() {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down("md"));
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
 
   const [loading, setLoading] = useState(true);
   const [expenses, setExpenses] = useState([]);
@@ -237,6 +238,23 @@ export default function ExpensesManager() {
   useEffect(() => {
     loadData();
   }, []);
+
+  // ── Auto-open add expense form pre-filled when coming from a job ──
+  useEffect(() => {
+    const jobIdParam = searchParams.get("jobId");
+    const jobNameParam = searchParams.get("jobName");
+    const editParam = searchParams.get("edit");
+
+    if (jobIdParam && !editParam) {
+      // Coming from JobExpenses "Add Expense" button — pre-fill and open immediately
+      setExpenseForm((prev) => ({
+        ...prev,
+        jobId: jobIdParam,
+        jobName: jobNameParam ? decodeURIComponent(jobNameParam) : "",
+      }));
+      setAddExpenseOpen(true);
+    }
+  }, [searchParams]);
   useEffect(() => {
     markAsViewed('expenses');
   }, []);

@@ -59,7 +59,6 @@ import { useNotificationCounts, markAsViewed } from "./useNotificationCounts";
 
 import ContractsDashboard from "./ContractsDashboard";
 import CreateBid from "./CreateBid";
-import ExpenseRepairTool from './ExpenseRepairTool';
 import ContractEditor from "./ContractEditor";
 import Dashboard from "./Dashboard";
 import InvoicesDashboard from "./InvoicesDashboard";
@@ -89,7 +88,6 @@ import ExpensesManager from "./ExpensesManager";
 import IntegratedPayroll from "./IntegratedPayroll"; // ✅ CHANGED: New integrated payroll system
 import CrewPaymentHistory from "./CrewPaymentHistory";
 import TaxReport from "./TaxReport";
-import JimSlayerExpenseFix from './JimSlayerExpenseFix';
 import MigrationPage from './MigrationPage';
 import MigrationDashboard from './MigrationDashboard';  // ← ADD THIS LINE
 import JobExpenses from "./JobExpenses";
@@ -858,12 +856,10 @@ function AppContent() {
         <Route path="/notes" element={<NotesManager />} /> {/* â† ADDED: Notes route */}
         <Route path="/customers" element={<CustomersDashboard />} />
         <Route path="/customer-edit/:id" element={<CustomerEditor />} />
-		<Route path="/expense-repair" element={<ExpenseRepairTool />} />
         <Route path="/customer/:id" element={<CustomerProfile />} />
         <Route path="/schedule-job" element={<ScheduleJob />} />
         <Route path="/migrate-tokens" element={<MigrationPage />} />
         <Route path="/schedule-dashboard" element={<ScheduleDashboard />} />
-		<Route path="/jim-slayer-fix" element={<JimSlayerExpenseFix />} />
         <Route path="/calendar-view" element={<CalendarView />} />
         {/* 🔒 CRITICAL: Maintenance routes - DO NOT REMOVE */}
         <Route path="/maintenance" element={<MaintenanceDashboard />} />
