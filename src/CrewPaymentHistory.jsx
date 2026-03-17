@@ -30,6 +30,7 @@ import {
 } from "@mui/material";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import DownloadIcon from "@mui/icons-material/Download";
+import { exportCrewPaymentsToExcel } from './utils/kclExportUtils';
 import ReceiptIcon from "@mui/icons-material/Receipt";
 import EditIcon from "@mui/icons-material/Edit";
 import DeleteIcon from "@mui/icons-material/Delete";
@@ -279,14 +280,24 @@ export default function CrewPaymentHistory() {
             💰 Crew Payment History
           </Typography>
         </Box>
-        <Button
-          variant="outlined"
-          startIcon={<DownloadIcon />}
-          onClick={handleExportCSV}
-          size={isMobile ? "small" : "medium"}
-        >
-          Export CSV
-        </Button>
+        <Box sx={{ display: 'flex', gap: 1 }}>
+          <Button
+            variant="outlined"
+            startIcon={<DownloadIcon />}
+            onClick={() => exportCrewPaymentsToExcel(filteredPayments)}
+            size={isMobile ? "small" : "medium"}
+          >
+            Excel
+          </Button>
+          <Button
+            variant="outlined"
+            startIcon={<DownloadIcon />}
+            onClick={handleExportCSV}
+            size={isMobile ? "small" : "medium"}
+          >
+            CSV
+          </Button>
+        </Box>
       </Box>
 
       {/* Summary Cards */}

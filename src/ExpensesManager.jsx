@@ -55,6 +55,7 @@ import VisibilityIcon from "@mui/icons-material/Visibility";
 import FilterListIcon from "@mui/icons-material/FilterList";
 import SortIcon from "@mui/icons-material/Sort";
 import DownloadIcon from "@mui/icons-material/Download";
+import { exportExpensesToExcel } from './utils/kclExportUtils';
 import CheckCircleIcon from "@mui/icons-material/CheckCircle";
 import BugReportIcon from "@mui/icons-material/BugReport";
 import moment from "moment";
@@ -862,6 +863,15 @@ export default function ExpensesManager() {
             </Button>
           )}
           
+          <Button
+            variant="outlined"
+            startIcon={<DownloadIcon />}
+            onClick={() => exportExpensesToExcel(sortedExpenses)}
+            size="small"
+          >
+            {isMobile ? "XLS" : "Export Excel"}
+          </Button>
+
           <Button
             variant="outlined"
             startIcon={<DownloadIcon />}

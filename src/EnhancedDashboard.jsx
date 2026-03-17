@@ -21,6 +21,11 @@ import {
   FormControl,
   Collapse,
   Tooltip,
+  Table,
+  TableHead,
+  TableBody,
+  TableRow,
+  TableCell,
 } from '@mui/material';
 import {
   CalendarToday,
@@ -53,6 +58,8 @@ const EnhancedDashboard = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const [loading, setLoading] = useState(true);
   const [goalsModalOpen, setGoalsModalOpen] = useState(false);
+  const [jobProfitData, setJobProfitData] = useState([]);
+  const [profitLoading, setProfitLoading] = useState(true);
 
   // Crew tile expand/collapse state
   const [gpsExpanded, setGpsExpanded] = useState(false);
@@ -93,8 +100,98 @@ const EnhancedDashboard = () => {
 
   useEffect(() => {
     fetchDashboardData();
+    fetchJobProfitability();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedYear]);
+
+  const fetchJobProfitability = async () => {
+    try {
+      setProfitLoading(true);
+
+      // Load all jobs
+      const jobsSnap = await getDocs(collection(db, 'jobs'));
+      const jobs = jobsSnap.docs.map(d => ({ id: d.id, ...d.data() }))
+        .filter(j => j.status !== 'Cancelled' && j.status !== 'cancelled');
+
+      // Load invoices → revenue per jobId
+      const invoicesSnap = await getDocs(collection(db, 'invoices'));
+      const invoicesByJob = {};
+      invoicesSnap.docs.forEach(d => {
+        const data = d.data();
+        if (data.jobId) {
+          invoicesByJob[data.jobId] = parseFloat(data.total || data.amount || 0);
+        }
+      });
+
+      // Load expenses → materials per jobId
+      const expensesSnap = await getDocs(collection(db, 'expenses'));
+      const expensesByJob = {};
+      expensesSnap.docs.forEach(d => {
+        const data = d.data();
+        if (data.jobId) {
+          expensesByJob[data.jobId] = (expensesByJob[data.jobId] || 0) + parseFloat(data.amount || 0);
+        }
+      });
+
+      // Load users → hourly rates
+      const usersSnap = await getDocs(collection(db, 'users'));
+      const userRates = {};
+      usersSnap.docs.forEach(d => {
+        const data = d.data();
+        userRates[data.name] = parseFloat(data.hourlyRate || 0);
+      });
+
+      // Load time entries → labor per jobId
+      const timeSnap = await getDocs(collection(db, 'job_time_entries'));
+      const laborByJob = {};
+      timeSnap.docs.forEach(d => {
+        const data = d.data();
+        if (!data.jobId) return;
+        const hours = parseFloat(data.hoursWorked || 0);
+        const rate = parseFloat(data.hourlyRate || 0) || userRates[data.crewName] || 0;
+        if (!laborByJob[data.jobId]) laborByJob[data.jobId] = { hours: 0, cost: 0 };
+        laborByJob[data.jobId].hours += hours;
+        laborByJob[data.jobId].cost += hours * rate;
+      });
+
+      // Calculate profit per job
+      const profitRows = jobs.map(job => {
+        const revenue  = invoicesByJob[job.id] || parseFloat(job.amount || 0);
+        const materials = expensesByJob[job.id] || parseFloat(job.totalExpenses || 0);
+        const labor    = laborByJob[job.id]?.cost || 0;
+        const laborHrs = laborByJob[job.id]?.hours || 0;
+        const profit   = revenue - materials - labor;
+        const margin   = revenue > 0 ? ((profit / revenue) * 100) : null;
+        return {
+          id: job.id,
+          clientName: job.clientName || 'Unknown',
+          status: job.status || 'Pending',
+          revenue,
+          materials,
+          labor,
+          laborHrs,
+          profit,
+          margin,
+          hasInvoice: !!invoicesByJob[job.id],
+          hasLabor: laborHrs > 0,
+        };
+      });
+
+      // Sort: negative profit first, then by margin ascending
+      profitRows.sort((a, b) => {
+        if (a.margin === null && b.margin !== null) return 1;
+        if (a.margin !== null && b.margin === null) return -1;
+        if (a.margin === null && b.margin === null) return 0;
+        return a.margin - b.margin;
+      });
+
+      setJobProfitData(profitRows);
+    } catch (err) {
+      console.error('Error loading profitability:', err);
+    } finally {
+      setProfitLoading(false);
+    }
+  };
 
   const handleYearChange = (event) => {
     const newYear = event.target.value;
@@ -896,7 +993,142 @@ const EnhancedDashboard = () => {
         </Grid>
 
         {/* ══════════════════════════════════════════════════
-            7. REFRESH
+            8. JOB PROFITABILITY
+        ══════════════════════════════════════════════════ */}
+        <Card elevation={2} sx={{ borderRadius: 3, mb: 3, overflow: 'hidden' }}>
+          <Box sx={{
+            p: 2,
+            background: 'linear-gradient(135deg, #1a237e 0%, #283593 100%)',
+            color: 'white',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+          }}>
+            <Box>
+              <Typography variant="h6" sx={{ fontWeight: 700 }}>💰 Job Profitability</Typography>
+              <Typography variant="caption" sx={{ opacity: 0.8 }}>
+                Worst margins first — click any row to view job details
+              </Typography>
+            </Box>
+            <Box sx={{ display: 'flex', gap: 1 }}>
+              <Chip label="🔴 Losing" size="small" sx={{ bgcolor: 'rgba(244,67,54,0.3)', color: 'white', fontSize: '0.7rem' }} />
+              <Chip label="🟡 Thin" size="small" sx={{ bgcolor: 'rgba(255,152,0,0.3)', color: 'white', fontSize: '0.7rem' }} />
+              <Chip label="🟢 Healthy" size="small" sx={{ bgcolor: 'rgba(76,175,80,0.3)', color: 'white', fontSize: '0.7rem' }} />
+            </Box>
+          </Box>
+
+          {profitLoading ? (
+            <Box sx={{ p: 4, textAlign: 'center' }}>
+              <CircularProgress size={32} />
+              <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>Loading profitability data...</Typography>
+            </Box>
+          ) : jobProfitData.length === 0 ? (
+            <Box sx={{ p: 4, textAlign: 'center' }}>
+              <Typography color="text.secondary">No jobs found</Typography>
+            </Box>
+          ) : (
+            <Box sx={{ overflowX: 'auto' }}>
+              <Table size="small">
+                <TableHead>
+                  <TableRow sx={{ bgcolor: '#f5f5f5' }}>
+                    <TableCell><strong>Job</strong></TableCell>
+                    <TableCell><strong>Status</strong></TableCell>
+                    <TableCell align="right"><strong>Revenue</strong></TableCell>
+                    <TableCell align="right"><strong>Materials</strong></TableCell>
+                    <TableCell align="right"><strong>Labor</strong></TableCell>
+                    <TableCell align="right"><strong>Profit</strong></TableCell>
+                    <TableCell align="right"><strong>Margin</strong></TableCell>
+                    <TableCell><strong>Flags</strong></TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {jobProfitData.slice(0, 15).map(job => {
+                    const isNeg    = job.margin !== null && job.margin < 0;
+                    const isThin   = job.margin !== null && job.margin >= 0 && job.margin < 20;
+                    const isGood   = job.margin !== null && job.margin >= 20;
+                    const rowColor = isNeg ? '#fff5f5' : isThin ? '#fffde7' : isGood ? '#f1f8e9' : 'white';
+                    const marginColor = isNeg ? '#c62828' : isThin ? '#e65100' : isGood ? '#2e7d32' : 'text.secondary';
+
+                    return (
+                      <TableRow
+                        key={job.id}
+                        hover
+                        sx={{ bgcolor: rowColor, cursor: 'pointer' }}
+                        onClick={() => navigate(`/job-expenses/${job.id}`)}
+                      >
+                        <TableCell>
+                          <Typography variant="body2" fontWeight="bold">{job.clientName}</Typography>
+                        </TableCell>
+                        <TableCell>
+                          <Chip
+                            label={job.status}
+                            size="small"
+                            color={job.status?.toLowerCase() === 'completed' ? 'success' : job.status?.toLowerCase() === 'active' ? 'info' : 'default'}
+                            variant="outlined"
+                            sx={{ fontSize: '0.65rem' }}
+                          />
+                        </TableCell>
+                        <TableCell align="right">
+                          <Typography variant="body2" color={job.revenue > 0 ? 'success.main' : 'text.secondary'} fontWeight="bold">
+                            {job.revenue > 0 ? `$${job.revenue.toFixed(0)}` : '—'}
+                          </Typography>
+                        </TableCell>
+                        <TableCell align="right">
+                          <Typography variant="body2" color={job.materials > 0 ? 'error.main' : 'text.secondary'}>
+                            {job.materials > 0 ? `$${job.materials.toFixed(0)}` : '—'}
+                          </Typography>
+                        </TableCell>
+                        <TableCell align="right">
+                          <Typography variant="body2" color={job.labor > 0 ? 'warning.dark' : 'text.secondary'}>
+                            {job.labor > 0 ? `$${job.labor.toFixed(0)} (${job.laborHrs.toFixed(1)}h)` : '—'}
+                          </Typography>
+                        </TableCell>
+                        <TableCell align="right">
+                          <Typography variant="body2" fontWeight="bold" color={job.profit >= 0 ? 'success.main' : 'error.main'}>
+                            {job.revenue > 0 ? `$${job.profit.toFixed(0)}` : '—'}
+                          </Typography>
+                        </TableCell>
+                        <TableCell align="right">
+                          <Typography variant="body2" fontWeight="bold" color={marginColor}>
+                            {job.margin !== null ? `${job.margin.toFixed(1)}%` : '—'}
+                          </Typography>
+                        </TableCell>
+                        <TableCell>
+                          <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
+                            {!job.hasInvoice && (
+                              <Chip label="No Invoice" size="small" color="warning" sx={{ fontSize: '0.6rem', height: 18 }} />
+                            )}
+                            {!job.hasLabor && (
+                              <Chip label="No Labor" size="small" color="default" sx={{ fontSize: '0.6rem', height: 18 }} />
+                            )}
+                            {isNeg && (
+                              <Chip label="⚠️ Loss" size="small" color="error" sx={{ fontSize: '0.6rem', height: 18 }} />
+                            )}
+                          </Box>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+              {jobProfitData.length > 15 && (
+                <Box sx={{ p: 1.5, textAlign: 'center', borderTop: '1px solid #e0e0e0' }}>
+                  <Typography
+                    variant="caption"
+                    color="primary"
+                    sx={{ cursor: 'pointer', fontWeight: 'bold' }}
+                    onClick={() => navigate('/jobs')}
+                  >
+                    + {jobProfitData.length - 15} more jobs — View All Jobs →
+                  </Typography>
+                </Box>
+              )}
+            </Box>
+          )}
+        </Card>
+
+        {/* ══════════════════════════════════════════════════
+            9. REFRESH
         ══════════════════════════════════════════════════ */}
         <Box sx={{ textAlign: 'center', mt: 2 }}>
           <Tooltip title="Refresh Dashboard">

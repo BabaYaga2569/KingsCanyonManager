@@ -21,7 +21,9 @@ import Swal from "sweetalert2";
 import PersonAddIcon from "@mui/icons-material/PersonAdd";
 import VisibilityIcon from "@mui/icons-material/Visibility";
 import SortIcon from "@mui/icons-material/Sort";
+import DownloadIcon from "@mui/icons-material/Download";
 import { markAsViewed } from './useNotificationCounts';
+import { exportCustomersToExcel, exportCustomersToCSV } from './utils/kclExportUtils';
 
 export default function CustomersDashboard() {
   const [customers, setCustomers] = useState([]);
@@ -140,6 +142,22 @@ export default function CustomersDashboard() {
             </Select>
           </FormControl>
 
+          <Button
+            variant="outlined"
+            startIcon={<DownloadIcon />}
+            onClick={() => exportCustomersToExcel(sortedCustomers)}
+            size="small"
+          >
+            Excel
+          </Button>
+          <Button
+            variant="outlined"
+            startIcon={<DownloadIcon />}
+            onClick={() => exportCustomersToCSV(sortedCustomers)}
+            size="small"
+          >
+            CSV
+          </Button>
           <Button
             variant="contained"
             startIcon={<PersonAddIcon />}

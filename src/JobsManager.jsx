@@ -42,6 +42,8 @@ import SortIcon from "@mui/icons-material/Sort";
 import FilterListIcon from "@mui/icons-material/FilterList";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import PersonIcon from "@mui/icons-material/Person";
+import DownloadIcon from "@mui/icons-material/Download";
+import { exportJobsToExcel, exportJobsToCSV } from './utils/kclExportUtils';
 import Swal from "sweetalert2";
 import { markAsViewed } from './useNotificationCounts';
 
@@ -606,6 +608,22 @@ export default function JobsManager() {
               <MenuItem value="status-pending">Pending First</MenuItem>
             </Select>
           </FormControl>
+          <Button
+            variant="outlined"
+            size="small"
+            startIcon={<DownloadIcon />}
+            onClick={() => exportJobsToExcel(sortedJobs)}
+          >
+            Excel
+          </Button>
+          <Button
+            variant="outlined"
+            size="small"
+            startIcon={<DownloadIcon />}
+            onClick={() => exportJobsToCSV(sortedJobs)}
+          >
+            CSV
+          </Button>
         </Box>
       </Box>
 
@@ -725,7 +743,40 @@ export default function JobsManager() {
                               </Box>
                             )}
 
-                            {/* Job Type Dropdown */}
+                            {/* Job Type Dropdown (original) */}
+                            {/* ── Profit Badge ── */}
+                            {(() => {
+                              const revenue = parseFloat(job.amount || 0);
+                              const materials = parseFloat(job.totalExpenses || 0);
+                              const hasRevenue = revenue > 0;
+                              if (!hasRevenue) {
+                                return (
+                                  <Box sx={{ mb: 2, p: 1, bgcolor: '#f5f5f5', borderRadius: 1, display: 'flex', alignItems: 'center', gap: 1 }}>
+                                    <Typography variant="caption" color="text.secondary">
+                                      💰 No invoice — profitability unknown
+                                    </Typography>
+                                  </Box>
+                                );
+                              }
+                              const profit = revenue - materials;
+                              const margin = (profit / revenue) * 100;
+                              const isLoss = margin < 0;
+                              const isThin = margin >= 0 && margin < 20;
+                              const bgcolor = isLoss ? '#ffebee' : isThin ? '#fffde7' : '#e8f5e9';
+                              const borderColor = isLoss ? '#f44336' : isThin ? '#ff9800' : '#4caf50';
+                              const emoji = isLoss ? '🔴' : isThin ? '🟡' : '🟢';
+                              return (
+                                <Box sx={{ mb: 2, p: 1, bgcolor, borderRadius: 1, borderLeft: `3px solid ${borderColor}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                  <Typography variant="caption" fontWeight="bold">
+                                    {emoji} Margin: {margin.toFixed(0)}%
+                                  </Typography>
+                                  <Typography variant="caption" color="text.secondary">
+                                    ${revenue.toFixed(0)} rev · ${materials.toFixed(0)} mat
+                                  </Typography>
+                                </Box>
+                              );
+                            })()}
+
                             <FormControl fullWidth sx={{ mb: 2 }}>
                               <InputLabel size="small">Job Type</InputLabel>
                               <Select

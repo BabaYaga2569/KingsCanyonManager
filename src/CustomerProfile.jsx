@@ -84,59 +84,74 @@ export default function CustomerProfile() {
   }, [id, navigate]);
 
   const handleSave = async () => {
-  if (!customer.name || !customer.phone || !customer.address) {
-    const missing = [];
-    if (!customer.name) missing.push("Name");
-    if (!customer.phone) missing.push("Phone");
-    if (!customer.address) missing.push("Address");
-    Swal.fire("Missing Info", `The following fields are required: ${missing.join(", ")}`, "warning");
-    return;
-  }
-
-  try {
-    // 📍 Geocode the address
-    let geoLat = null;
-    let geoLng = null;
-    const fullAddress = [customer.address, customer.city, customer.state, customer.zip]
-      .filter(Boolean).join(", ");
-
-    try {
-      const encoded = encodeURIComponent(fullAddress);
-      const geoRes = await fetch(
-        `https://nominatim.openstreetmap.org/search?q=${encoded}&format=json&limit=1`,
-        { headers: { "User-Agent": "KCLManager/1.0 (Kings Canyon Landscaping)" } }
-      );
-      const geoData = await geoRes.json();
-      if (geoData.length > 0) {
-        geoLat = parseFloat(geoData[0].lat);
-        geoLng = parseFloat(geoData[0].lon);
-        console.log(`📍 Geocoded: ${fullAddress} → ${geoLat}, ${geoLng}`);
-      } else {
-        console.warn("📍 Could not geocode address:", fullAddress);
-      }
-    } catch (geoErr) {
-      console.warn("📍 Geocoding error:", geoErr);
+    if (!customer.name || !customer.phone || !customer.address) {
+      const missing = [];
+      if (!customer.name) missing.push("Name");
+      if (!customer.phone) missing.push("Phone");
+      if (!customer.address) missing.push("Address");
+      Swal.fire("Missing Info", `The following fields are required: ${missing.join(", ")}`, "warning");
+      return;
     }
 
-    await updateDoc(doc(db, "customers", id), {
-      name: customer.name,
-      email: customer.email || "",
-      phone: customer.phone || "",
-      address: customer.address || "",
-      notes: customer.notes || "",
-      nameLower: customer.name.toLowerCase(),
-      geoLat,
-      geoLng,
-    });
-    Swal.fire("Saved!", "Customer updated successfully.", "success");
-    setEditing(false);
-  } catch (error) {
-    Swal.fire("Error", "Failed to save changes.", "error");
-  }
-};
+    try {
+      // 📍 Geocode the address — use separate fields to avoid double-city bug
+      let geoLat = null;
+      let geoLng = null;
+      const fullAddress = [customer.address, customer.city, customer.state, customer.zip]
+        .filter(Boolean).join(", ");
+
+      try {
+        const encoded = encodeURIComponent(fullAddress);
+        const geoRes = await fetch(
+          `https://nominatim.openstreetmap.org/search?q=${encoded}&format=json&limit=1`,
+          { headers: { "User-Agent": "KCLManager/1.0 (Kings Canyon Landscaping)" } }
+        );
+        const geoData = await geoRes.json();
+        if (geoData.length > 0) {
+          geoLat = parseFloat(geoData[0].lat);
+          geoLng = parseFloat(geoData[0].lon);
+          console.log(`📍 Geocoded: ${fullAddress} → ${geoLat}, ${geoLng}`);
+        } else {
+          console.warn("📍 Could not geocode address:", fullAddress);
+          const { value: continueAnyway } = await Swal.fire({
+            icon: "warning",
+            title: "Address Not Found",
+            html: `The address <strong>${fullAddress}</strong> could not be verified on the map.<br/><br/>
+                   Crew members will <strong>not be GPS-blocked</strong> for this customer's jobs until a valid address is saved.<br/><br/>
+                   Continue saving anyway?`,
+            showCancelButton: true,
+            confirmButtonText: "Save Anyway",
+            cancelButtonText: "Go Back & Fix Address",
+          });
+          if (!continueAnyway) return;
+        }
+      } catch (geoErr) {
+        console.warn("📍 Geocoding error:", geoErr);
+      }
+
+      await updateDoc(doc(db, "customers", id), {
+        name: customer.name,
+        email: customer.email || "",
+        phone: customer.phone || "",
+        address: customer.address || "",
+        city: customer.city || "",
+        state: customer.state || "AZ",
+        zip: customer.zip || "",
+        notes: customer.notes || "",
+        nameLower: customer.name.toLowerCase(),
+        geoLat,
+        geoLng,
+      });
+
+      Swal.fire("Saved!", "Customer updated successfully.", "success");
+      setEditing(false);
+    } catch (error) {
+      console.error("Error saving:", error);
+      Swal.fire("Error", "Failed to save changes.", "error");
+    }
+  };
 
   const handleOpenScheduleDialog = () => {
-    // Default to tomorrow at 9am
     const tomorrow = new Date();
     tomorrow.setDate(tomorrow.getDate() + 1);
     const dateStr = tomorrow.toISOString().split("T")[0];
@@ -155,11 +170,9 @@ export default function CustomerProfile() {
       const startDateTime = `${appointmentForm.date}T${appointmentForm.time}`;
       const startDate = new Date(startDateTime);
 
-      // Calculate end time — default 1 hour for a bid appointment
       const endDate = new Date(startDate.getTime() + 60 * 60 * 1000);
       const endTime = endDate.toTimeString().slice(0, 5);
 
-      // 1 — Create draft bid (ready to fill in on-site)
       const bidRef = await addDoc(collection(db, "bids"), {
         customerId: id,
         customerName: customer.name,
@@ -178,7 +191,6 @@ export default function CustomerProfile() {
         signingToken: "",
       });
 
-      // 2 — Create calendar schedule entry
       await addDoc(collection(db, "schedules"), {
         customerId: id,
         clientName: customer.name,
@@ -199,7 +211,6 @@ export default function CustomerProfile() {
         createdAt: new Date().toISOString(),
       });
 
-      // 3 — Fire Pushover notification to admin
       try {
         await notifyBidAppointmentScheduled(
           customer.name,
@@ -231,7 +242,6 @@ export default function CustomerProfile() {
         if (result.isConfirmed) navigate("/calendar");
       });
 
-      // Refresh linked docs to show new draft bid
       const updatedBids = await getDocs(
         query(collection(db, "bids"), where("customerId", "==", id))
       );
@@ -326,16 +336,38 @@ export default function CustomerProfile() {
               onChange={(e) => setCustomer({ ...customer, phone: e.target.value })}
               fullWidth
             />
+            {/* ── Address broken into separate fields to prevent double-city geocoding bug ── */}
             <TextField
-              label="Address"
-              multiline
-              rows={2}
+              label="Street Address"
               value={customer.address || ""}
               onChange={(e) => setCustomer({ ...customer, address: e.target.value })}
               fullWidth
               required
-              helperText="Required – needed for scheduling and GPS navigation"
+              placeholder="e.g., 9779 S Dike Rd"
+              helperText="Street only — city/state/zip entered separately below"
             />
+            <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", sm: "2fr 1fr 1fr" }, gap: 2 }}>
+              <TextField
+                label="City"
+                value={customer.city || ""}
+                onChange={(e) => setCustomer({ ...customer, city: e.target.value })}
+                fullWidth
+                placeholder="e.g., Mohave Valley"
+              />
+              <TextField
+                label="State"
+                value={customer.state || "AZ"}
+                onChange={(e) => setCustomer({ ...customer, state: e.target.value })}
+                fullWidth
+              />
+              <TextField
+                label="ZIP"
+                value={customer.zip || ""}
+                onChange={(e) => setCustomer({ ...customer, zip: e.target.value })}
+                fullWidth
+                placeholder="86446"
+              />
+            </Box>
             <TextField
               label="Notes"
               multiline
@@ -362,7 +394,7 @@ export default function CustomerProfile() {
             )}
             {customer.address && (
               <Typography variant="body1" sx={{ mb: 1 }}>
-                <strong>Address:</strong> {customer.address}
+                <strong>Address:</strong> {[customer.address, customer.city, customer.state, customer.zip].filter(Boolean).join(", ")}
               </Typography>
             )}
             {customer.notes && (
@@ -540,7 +572,6 @@ export default function CustomerProfile() {
         </DialogTitle>
         <DialogContent>
           <Box sx={{ pt: 1 }}>
-            {/* Customer summary */}
             <Paper sx={{ p: 2, mb: 3, bgcolor: "#f5f5f5" }}>
               <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
                 {customer.name}

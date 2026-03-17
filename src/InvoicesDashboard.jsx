@@ -56,6 +56,8 @@ import SpeedIcon from "@mui/icons-material/Speed";
 import PersonAddIcon from "@mui/icons-material/PersonAdd";
 import CameraAltIcon from "@mui/icons-material/CameraAlt";
 import PhotoLibraryIcon from "@mui/icons-material/PhotoLibrary";
+import DownloadIcon from "@mui/icons-material/Download";
+import { exportInvoicesToExcel, exportInvoicesToCSV } from './utils/kclExportUtils';
 import moment from "moment";
 import generateInvoicePDF from "./pdf/generateInvoicePDF";
 import { markAsViewed } from './useNotificationCounts';
@@ -983,6 +985,22 @@ export default function InvoicesDashboard() {
             <MenuItem value="status-paid">Paid First</MenuItem>
           </Select>
         </FormControl>
+          <Button
+            variant="outlined"
+            size="small"
+            startIcon={<DownloadIcon />}
+            onClick={() => exportInvoicesToExcel(filteredInvoices)}
+          >
+            Excel
+          </Button>
+          <Button
+            variant="outlined"
+            size="small"
+            startIcon={<DownloadIcon />}
+            onClick={() => exportInvoicesToCSV(filteredInvoices)}
+          >
+            CSV
+          </Button>
         </Box>
       </Box>
 

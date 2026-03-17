@@ -853,3 +853,219 @@ exports.notifySignature = functions.https.onCall(async (data) => {
     throw new functions.https.HttpsError('internal', error.message);
   }
 });
+
+// ========================= BID AUTO-ARCHIVE =========================
+// Runs daily at 9 AM Arizona time
+// - Archives bids not edited in 30+ days (if not signed)
+// - Sends Pushover warning at 23 days (7 days before auto-archive)
+
+exports.autoBidArchive = functions.pubsub
+  .schedule('0 9 * * *')
+  .timeZone('America/Phoenix')
+  .onRun(async (context) => {
+    console.log('>>> autoBidArchive running');
+
+    try {
+      const now = new Date();
+      const thirtyDaysAgo = new Date(now.getTime() - 30 * 86400000);
+      const twentyThreeDaysAgo = new Date(now.getTime() - 23 * 86400000);
+
+      const bidsSnap = await admin.firestore().collection('bids').get();
+      let archived = 0;
+      let warned = 0;
+
+      // Load Pushover settings
+      const settingsSnap = await admin.firestore()
+        .collection('notification_settings').limit(1).get();
+      const settings = settingsSnap.empty ? null : settingsSnap.docs[0].data();
+
+      const sendPushover = async (message) => {
+        if (!settings || !settings.pushoverEnabled || !settings.pushoverApiKey || !settings.pushoverUserKey) return;
+        try {
+          const fetch = require('node-fetch');
+          await fetch('https://api.pushover.net/1/messages.json', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              token: settings.pushoverApiKey,
+              user: settings.pushoverUserKey,
+              title: 'KCL Bid Archive Notice',
+              message,
+              priority: 0,
+            }),
+          });
+        } catch (e) {
+          console.error('Pushover error:', e.message);
+        }
+      };
+
+      for (const bidDoc of bidsSnap.docs) {
+        const bid = bidDoc.data();
+
+        // Skip already archived, signed, or cancelled bids
+        if (bid.status === 'archived' || bid.status === 'cancelled') continue;
+        if (bid.clientSignature && bid.contractorSignature) continue;
+        if (bid.warningSent30) continue; // already warned, waiting for archive
+
+        // Determine reference date (last edited or created)
+        const refDate = bid.updatedAt
+          ? new Date(bid.updatedAt)
+          : bid.createdAt
+          ? new Date(bid.createdAt)
+          : null;
+
+        if (!refDate) continue;
+
+        // Archive at 30 days
+        if (refDate <= thirtyDaysAgo) {
+          await bidDoc.ref.update({
+            status: 'archived',
+            archivedAt: now.toISOString(),
+            archivedBy: 'auto',
+          });
+          archived++;
+          console.log(`Archived bid for ${bid.customerName} (${bidDoc.id})`);
+
+          await sendPushover(
+            `📁 Bid AUTO-ARCHIVED\n${bid.customerName} — $${parseFloat(bid.amount || 0).toFixed(2)}\nNot edited in 30 days. View archive in the Bids page.`
+          );
+
+          // Log to notifications
+          await admin.firestore().collection('notifications_log').add({
+            type: 'bid_archived',
+            bidId: bidDoc.id,
+            customerName: bid.customerName,
+            message: `Bid for ${bid.customerName} auto-archived after 30 days`,
+            sentAt: now.toISOString(),
+          });
+
+        // Warn at 23 days (7 days before archive)
+        } else if (refDate <= twentyThreeDaysAgo && !bid.warningSent30) {
+          const daysLeft = Math.ceil((refDate.getTime() + 30 * 86400000 - now.getTime()) / 86400000);
+
+          await sendPushover(
+            `⚠️ Bid Expiring Soon\n${bid.customerName} — $${parseFloat(bid.amount || 0).toFixed(2)}\nArchives in ${daysLeft} day${daysLeft !== 1 ? 's' : ''} if not accepted or edited.`
+          );
+
+          // Mark warning sent so we don't spam daily
+          await bidDoc.ref.update({ warningSent30: true });
+          warned++;
+          console.log(`Warning sent for ${bid.customerName} (${daysLeft} days left)`);
+        }
+      }
+
+      console.log(`autoBidArchive complete: ${archived} archived, ${warned} warnings sent`);
+      return null;
+    } catch (error) {
+      console.error('Error in autoBidArchive:', error);
+      return null;
+    }
+  });
+
+// ─────────────────────────────────────────────────────────────
+// AI BID ASSISTANT PROXY
+// Proxies Claude API calls from the browser (avoids CORS)
+// ─────────────────────────────────────────────────────────────
+exports.bidAssistant = functions.runWith({ secrets: ['ANTHROPIC_API_KEY'] }).https.onCall(async (data, context) => {
+  const { messages, photos } = data;
+
+  if (!messages || !Array.isArray(messages)) {
+    throw new functions.https.HttpsError('invalid-argument', 'Messages array required');
+  }
+
+  const fetch = require('node-fetch');
+
+  const SYSTEM_PROMPT = `You are an expert bid assistant for Kings Canyon Landscaping LLC, a full-service contractor based in Bullhead City, Arizona serving Bullhead City, Fort Mohave, Mohave Valley, and Laughlin NV.
+
+CRITICAL: KCL takes on ALL types of work — not just landscaping. Never refuse or redirect a job. Price everything.
+
+Services include but are not limited to:
+- Desert landscaping, rock/gravel, weed removal, yard cleanup, grading, drainage
+- Irrigation systems, sprinkler repair and installation
+- Tree and shrub trimming, hauling, debris removal
+- Concrete, pavers, patios, walkways, driveways
+- Fencing, block walls, retaining walls
+- Outdoor structures: pergolas, shade structures, ramadas
+- Interior/exterior repairs: flooring, drywall, stucco, plywood, ceilings, roofing
+- Painting interior and exterior
+- General handyman and construction work of any kind
+
+Labor rate: $60/hour for all work types.
+
+RULES — follow these strictly:
+1. NEVER say any job is outside KCL services. Price it.
+2. NEVER ask for more details or photos. Make reasonable assumptions and give a number.
+3. If photos are provided, analyze them to improve accuracy.
+4. Always give a concrete bid. If uncertain, state your assumptions in reasoning.
+5. For any job description respond ONLY with this JSON (no markdown, no code fences, no extra text):
+{
+  "description": "Full professional scope of work ready to paste into the bid",
+  "materials": "Itemized materials list with quantities",
+  "estimatedHours": 8,
+  "laborCost": 480,
+  "materialsCost": 600,
+  "recommendedAmount": 1200,
+  "reasoning": "How you arrived at the numbers and any assumptions made"
+}
+
+Only respond in plain text if the user asks a general non-job question. Otherwise always return JSON.`;
+
+  // Build image blocks once — inject into every user message so AI always has context
+  const imageBlocks = (photos && photos.length > 0) ? photos.map(base64 => {
+    let mediaType = 'image/jpeg';
+    if (base64.startsWith('iVBORw0KGgo')) mediaType = 'image/png';
+    else if (base64.startsWith('UklGR')) mediaType = 'image/webp';
+    return {
+      type: 'image',
+      source: { type: 'base64', media_type: mediaType, data: base64 },
+    };
+  }) : [];
+
+  let apiMessages = messages.map((msg) => {
+    if (msg.role === 'user' && imageBlocks.length > 0) {
+      // Attach photos to every user message so AI never loses sight of them
+      const textContent = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
+      return {
+        role: 'user',
+        content: [
+          ...imageBlocks,
+          { type: 'text', text: textContent },
+        ],
+      };
+    }
+    // For assistant messages, ensure content is a string
+    if (msg.role === 'assistant') {
+      return { role: 'assistant', content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content) };
+    }
+    return msg;
+  });
+
+  try {
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 1000,
+        system: SYSTEM_PROMPT,
+        messages: apiMessages,
+      }),
+    });
+
+    const result = await response.json();
+
+    if (!response.ok) {
+      console.error('Anthropic API error:', result);
+      throw new functions.https.HttpsError('internal', 'AI service error');
+    }
+
+    return { text: result.content?.[0]?.text || '' };
+  } catch (error) {
+    console.error('bidAssistant error:', error);
+    throw new functions.https.HttpsError('internal', error.message);
+  }
+});

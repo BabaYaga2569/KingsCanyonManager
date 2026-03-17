@@ -32,6 +32,8 @@ import CancelIcon from "@mui/icons-material/Cancel";
 import EditIcon from "@mui/icons-material/Edit";
 import DeleteIcon from "@mui/icons-material/Delete";
 import GpsFixedIcon from "@mui/icons-material/GpsFixed";
+import DownloadIcon from "@mui/icons-material/Download";
+import { exportTimeEntriesToExcel, exportTimeEntriesToCSV } from './utils/kclExportUtils';
 import Tooltip from "@mui/material/Tooltip";
 import moment from "moment";
 import Swal from "sweetalert2";
@@ -272,8 +274,26 @@ export default function ApproveTime() {
 
       {/* Time Entries List */}
       <Paper>
-        <Box sx={{ p: 2, borderBottom: '1px solid #e0e0e0' }}>
+        <Box sx={{ p: 2, borderBottom: '1px solid #e0e0e0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <Typography variant="h6">Pending Time Entries</Typography>
+          <Box sx={{ display: 'flex', gap: 1 }}>
+            <Button
+              variant="outlined"
+              size="small"
+              startIcon={<DownloadIcon />}
+              onClick={() => exportTimeEntriesToExcel(timeEntries)}
+            >
+              Excel
+            </Button>
+            <Button
+              variant="outlined"
+              size="small"
+              startIcon={<DownloadIcon />}
+              onClick={() => exportTimeEntriesToCSV(timeEntries)}
+            >
+              CSV
+            </Button>
+          </Box>
         </Box>
 
         {timeEntries.length === 0 ? (

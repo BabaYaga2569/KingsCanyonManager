@@ -33,6 +33,7 @@ import {
   FormControl,
   InputLabel,
   Badge,
+  Chip,
 } from "@mui/material";
 import MenuIcon from "@mui/icons-material/Menu";
 import CloseIcon from "@mui/icons-material/Close";
@@ -50,6 +51,7 @@ import {
   doc,
   getDoc,
   onSnapshot,
+  updateDoc,
 } from "firebase/firestore";
 // Import AuthProvider
 import { AuthProvider, useAuth } from "./AuthProvider";
@@ -62,6 +64,7 @@ import CreateBid from "./CreateBid";
 import ExpenseRepairTool from './ExpenseRepairTool';
 import ContractEditor from "./ContractEditor";
 import Dashboard from "./Dashboard";
+import EnhancedDashboard from './EnhancedDashboard';
 import InvoicesDashboard from "./InvoicesDashboard";
 import InvoiceEditor from "./InvoiceEditor";
 import JobsManager from "./JobsManager";
@@ -122,6 +125,7 @@ function BidsList() {
   const [sortedBids, setSortedBids] = useState([]);
   const [sortOrder, setSortOrder] = useState("newest");
   const [logoDataUrl, setLogoDataUrl] = useState(null);
+  const [showArchived, setShowArchived] = useState(false);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -154,14 +158,17 @@ function BidsList() {
     };
     fetchBids();
   }, []);
+
   useEffect(() => {
     markAsViewed('bids');
   }, []);
 
-
-  // Sort bids whenever bids or sortOrder changes
+  // Sort bids whenever bids, sortOrder, or showArchived changes
   useEffect(() => {
-    const sorted = [...bids].sort((a, b) => {
+    const filtered = bids.filter(b =>
+      showArchived ? b.status === 'archived' : b.status !== 'archived'
+    );
+    const sorted = [...filtered].sort((a, b) => {
       switch (sortOrder) {
         case "newest":
           return new Date(b.createdAt || b.date || 0) - new Date(a.createdAt || a.date || 0);
@@ -180,7 +187,14 @@ function BidsList() {
       }
     });
     setSortedBids(sorted);
-  }, [bids, sortOrder]);
+  }, [bids, sortOrder, showArchived]);
+
+  // Days since last edit
+  const daysSinceEdit = (bid) => {
+    const ref = bid.updatedAt || bid.createdAt || bid.date;
+    if (!ref) return null;
+    return Math.floor((Date.now() - new Date(ref).getTime()) / 86400000);
+  };
 
   const handleDelete = async (bid) => {
     const confirm = await Swal.fire({
@@ -191,12 +205,32 @@ function BidsList() {
       confirmButtonText: "Yes, delete",
       cancelButtonText: "Cancel",
     });
-
     if (confirm.isConfirmed) {
       await deleteDoc(doc(db, "bids", bid.id));
       setBids(bids.filter((b) => b.id !== bid.id));
       Swal.fire("Deleted!", "Bid has been removed.", "success");
     }
+  };
+
+  const handleArchive = async (bid) => {
+    await updateDoc(doc(db, "bids", bid.id), {
+      status: 'archived',
+      archivedAt: new Date().toISOString(),
+      archivedBy: 'manual',
+    });
+    setBids(bids.map(b => b.id === bid.id ? { ...b, status: 'archived', archivedAt: new Date().toISOString() } : b));
+    Swal.fire({ icon: 'success', title: 'Archived', text: `${bid.customerName}'s bid moved to archive.`, timer: 2000, showConfirmButton: false });
+  };
+
+  const handleRestore = async (bid) => {
+    await updateDoc(doc(db, "bids", bid.id), {
+      status: 'pending',
+      archivedAt: null,
+      archivedBy: null,
+      updatedAt: new Date().toISOString(),
+    });
+    setBids(bids.map(b => b.id === bid.id ? { ...b, status: 'pending', archivedAt: null } : b));
+    Swal.fire({ icon: 'success', title: 'Restored', text: `${bid.customerName}'s bid is back in the active list.`, timer: 2000, showConfirmButton: false });
   };
 
   const handleEdit = (bid) => {
@@ -206,82 +240,84 @@ function BidsList() {
   const handleCreateContract = async (bid) => {
     try {
       const result = await createFullJobPackage(bid);
-      
       if (!result) return;
-      
       const { contractId, invoiceId, jobId } = result;
-
       Swal.fire({
         icon: "success",
         title: "Job Package Created!",
-        html: `
-          <b>${bid.customerName}</b>'s bid has been promoted.<br>
+        html: `<b>${bid.customerName}</b>'s bid has been promoted.<br>
           <ul style="text-align:left">
             <li>Contract: ${contractId}</li>
             <li>Invoice: ${invoiceId}</li>
             <li>Job Folder: ${jobId}</li>
-          </ul>
-        `,
+          </ul>`,
         confirmButtonText: "Open Contract",
-      }).then(() => {
-        window.location.assign(`/contract/${contractId}`);
-      });
+      }).then(() => { window.location.assign(`/contract/${contractId}`); });
     } catch (error) {
       console.error("Error creating full job package:", error);
-      Swal.fire({
-        icon: "error",
-        title: "Error",
-        text: "Could not create linked documents. Check console for details.",
-      });
+      Swal.fire({ icon: "error", title: "Error", text: "Could not create linked documents. Check console for details." });
     }
   };
 
   const handleGeneratePDF = async (bid) => {
     try {
       const pdf = await generateBidPDF(bid, logoDataUrl);
-      
       const pdfBlob = pdf.output('blob');
-      const pdfUrl = URL.createObjectURL(pdfBlob);
-      
-      window.open(pdfUrl, '_blank');
-      
-      Swal.fire({
-        icon: "success",
-        title: "PDF Opened!",
-        text: `Viewing bid proposal for ${bid.customerName}`,
-        timer: 2000,
-        showConfirmButton: false,
-      });
+      window.open(URL.createObjectURL(pdfBlob), '_blank');
+      Swal.fire({ icon: "success", title: "PDF Opened!", text: `Viewing bid proposal for ${bid.customerName}`, timer: 2000, showConfirmButton: false });
     } catch (error) {
-      console.error("Error generating bid PDF:", error);
-      Swal.fire({
-        icon: "error",
-        title: "Error",
-        text: "Failed to generate PDF. Please try again.",
-      });
+      Swal.fire({ icon: "error", title: "Error", text: "Failed to generate PDF. Please try again." });
     }
   };
 
+  const activeBids = bids.filter(b => b.status !== 'archived');
+  const archivedBids = bids.filter(b => b.status === 'archived');
+
+  // Bids expiring within 7 days (not yet archived, not signed)
+  const expiringSoon = activeBids.filter(b => {
+    if (b.clientSignature && b.contractorSignature) return false;
+    if (b.status === 'archived') return false;
+    const days = daysSinceEdit(b);
+    return days !== null && days >= 23 && days < 30;
+  });
+
   return (
     <Container sx={{ mt: 3, px: { xs: 1, sm: 2 } }}>
-      {/* Header with Sort Dropdown */}
+
+      {/* Expiring Soon Banner */}
+      {!showArchived && expiringSoon.length > 0 && (
+        <Box sx={{ mb: 2, p: 2, bgcolor: '#fff8e1', border: '1px solid #ff9800', borderRadius: 2, display: 'flex', alignItems: 'center', gap: 1 }}>
+          <Typography variant="body2" color="warning.dark" fontWeight="bold">
+            ⚠️ {expiringSoon.length} bid{expiringSoon.length > 1 ? 's' : ''} will auto-archive within 7 days:
+          </Typography>
+          <Typography variant="body2" color="warning.dark">
+            {expiringSoon.map(b => `${b.customerName} (${30 - daysSinceEdit(b)}d left)`).join(', ')}
+          </Typography>
+        </Box>
+      )}
+
+      {/* Header */}
       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3, flexWrap: 'wrap', gap: 2 }}>
-        <Typography variant="h6" sx={{ fontSize: { xs: '1.25rem', sm: '1.5rem' } }}>
-          Bids List ({sortedBids.length})
-        </Typography>
-        
-        
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+          <Typography variant="h6" sx={{ fontSize: { xs: '1.25rem', sm: '1.5rem' } }}>
+            {showArchived ? `Archived Bids (${archivedBids.length})` : `Bids (${activeBids.length})`}
+          </Typography>
+          <Button
+            variant={showArchived ? "contained" : "outlined"}
+            color="warning"
+            size="small"
+            onClick={() => setShowArchived(!showArchived)}
+          >
+            {showArchived ? '← Active Bids' : `🗄️ Archive (${archivedBids.length})`}
+          </Button>
+        </Box>
+
         <FormControl size="small" sx={{ minWidth: 200 }}>
           <InputLabel id="sort-label">
             <SortIcon sx={{ fontSize: 18, mr: 0.5, verticalAlign: 'middle' }} />
             Sort By
           </InputLabel>
-          <Select
-            labelId="sort-label"
-            value={sortOrder}
-            label="Sort By"
-            onChange={(e) => setSortOrder(e.target.value)}
-          >
+          <Select labelId="sort-label" value={sortOrder} label="Sort By" onChange={(e) => setSortOrder(e.target.value)}>
             <MenuItem value="newest">Newest First</MenuItem>
             <MenuItem value="oldest">Oldest First</MenuItem>
             <MenuItem value="name-asc">Name (A-Z)</MenuItem>
@@ -291,214 +327,158 @@ function BidsList() {
           </Select>
         </FormControl>
 
-        <Button
-          variant="outlined"
-          startIcon={<DownloadIcon />}
-          onClick={() => exportBidsToExcel(sortedBids)}
-          size="small"
-        >
-          Export Excel
-        </Button>
-
-        <Button
-          variant="outlined"
-          startIcon={<DescriptionIcon />}
-          onClick={() => exportAllBidsToWord(sortedBids)}
-          size="small"
-        >
-          Export All (Word Zip)
-        </Button>
+        {!showArchived && (
+          <>
+            <Button variant="outlined" startIcon={<DownloadIcon />} onClick={() => exportBidsToExcel(sortedBids)} size="small">
+              Export Excel
+            </Button>
+            <Button variant="outlined" startIcon={<DescriptionIcon />} onClick={() => exportAllBidsToWord(sortedBids)} size="small">
+              Export All (Word Zip)
+            </Button>
+          </>
+        )}
       </Box>
-      
-      {/* MOBILE VIEW - Card Layout */}
+
+      {/* Archive info banner */}
+      {showArchived && (
+        <Box sx={{ mb: 2, p: 2, bgcolor: '#f3e5f5', border: '1px solid #9c27b0', borderRadius: 2 }}>
+          <Typography variant="body2" color="purple">
+            🗄️ Bids are automatically archived 30 days after their last edit if not accepted. You can restore any bid to the active list, or permanently delete it from here.
+          </Typography>
+        </Box>
+      )}
+
+      {/* MOBILE VIEW */}
       <Box sx={{ display: { xs: 'block', md: 'none' } }}>
-        {sortedBids.map((bid) => (
-          <Box
-            key={bid.id}
-            sx={{
-              mb: 2,
-              p: 2,
-              border: '1px solid #ddd',
-              borderRadius: 2,
-              backgroundColor: 'white',
-            }}
-          >
-            <Typography variant="h6" sx={{ mb: 1 }}>{bid.customerName}</Typography>
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-              Amount: ${bid.amount}
-            </Typography>
-            <Typography variant="body2" sx={{ mb: 1 }}>{bid.description}</Typography>
-            {bid.materials && (
-              <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                Materials: {bid.materials}
-              </Typography>
-            )}
-            {bid.createdAt && (
-              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 2 }}>
-                Created: {new Date(bid.createdAt).toLocaleDateString()}
-              </Typography>
-            )}
-            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-              <Button
-                variant="outlined"
-                color="info"
-                size="small"
-                onClick={() => handleEdit(bid)}
-                fullWidth
-              >
-                Edit
-              </Button>
-              <Button
-                variant="outlined"
-                color="primary"
-                size="small"
-                onClick={() => handleGeneratePDF(bid)}
-                fullWidth
-              >
-                View PDF
-              </Button>
-              <Button
-                variant="outlined"
-                color="success"
-                size="small"
-                onClick={() => handleCreateContract(bid)}
-                fullWidth
-              >
-                Create Contract
-              </Button>
-              <Button
-                variant="outlined"
-                size="small"
-                startIcon={<DescriptionIcon />}
-                onClick={() => exportBidToWord(bid)}
-                fullWidth
-              >
-                Word Doc
-              </Button>
-              <Button
-                variant="outlined"
-                color="error"
-                size="small"
-                onClick={() => handleDelete(bid)}
-                fullWidth
-              >
-                Delete
-              </Button>
+        {sortedBids.map((bid) => {
+          const days = daysSinceEdit(bid);
+          const daysLeft = days !== null ? 30 - days : null;
+          const isExpiringSoon = !showArchived && daysLeft !== null && daysLeft <= 7 && daysLeft > 0;
+          const isSigned = bid.clientSignature && bid.contractorSignature;
+          return (
+            <Box key={bid.id} sx={{
+              mb: 2, p: 2, border: '1px solid', borderRadius: 2, backgroundColor: 'white',
+              borderColor: isExpiringSoon ? '#ff9800' : '#ddd',
+              bgcolor: isExpiringSoon ? '#fffde7' : 'white',
+            }}>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', mb: 1 }}>
+                <Typography variant="h6">{bid.customerName}</Typography>
+                {isSigned && <Chip label="✅ Signed" color="success" size="small" />}
+                {isExpiringSoon && <Chip label={`⚠️ ${daysLeft}d left`} color="warning" size="small" />}
+              </Box>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>Amount: ${bid.amount}</Typography>
+              <Typography variant="body2" sx={{ mb: 1 }}>{bid.description}</Typography>
+              {bid.createdAt && (
+                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
+                  Created: {new Date(bid.createdAt).toLocaleDateString()}
+                  {bid.updatedAt && bid.updatedAt !== bid.createdAt && ` · Edited: ${new Date(bid.updatedAt).toLocaleDateString()}`}
+                </Typography>
+              )}
+              {showArchived && bid.archivedAt && (
+                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
+                  Archived: {new Date(bid.archivedAt).toLocaleDateString()}
+                  {bid.archivedBy === 'auto' ? ' (auto)' : ' (manual)'}
+                </Typography>
+              )}
+              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                {!showArchived && (<>
+                  <Button variant="outlined" color="info" size="small" onClick={() => handleEdit(bid)} fullWidth>Edit</Button>
+                  <Button variant="outlined" color="primary" size="small" onClick={() => handleGeneratePDF(bid)} fullWidth>View PDF</Button>
+                  <Button variant="outlined" color="success" size="small" onClick={() => handleCreateContract(bid)} fullWidth>Create Contract</Button>
+                  <Button variant="outlined" size="small" startIcon={<DescriptionIcon />} onClick={() => exportBidToWord(bid)} fullWidth>Word Doc</Button>
+                  <Button variant="outlined" color="warning" size="small" onClick={() => handleArchive(bid)} fullWidth>Archive</Button>
+                  <Button variant="outlined" color="error" size="small" onClick={() => handleDelete(bid)} fullWidth>Delete</Button>
+                </>)}
+                {showArchived && (<>
+                  <Button variant="outlined" color="success" size="small" onClick={() => handleRestore(bid)} fullWidth>↩ Restore</Button>
+                  <Button variant="outlined" color="error" size="small" onClick={() => handleDelete(bid)} fullWidth>Delete Permanently</Button>
+                </>)}
+              </Box>
             </Box>
-          </Box>
-        ))}
-        
+          );
+        })}
         {sortedBids.length === 0 && (
           <Box sx={{ textAlign: 'center', py: 8 }}>
             <Typography variant="h6" color="text.secondary">
-              No Bids Yet
+              {showArchived ? 'No archived bids' : 'No Bids Yet'}
             </Typography>
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-              Create your first bid to get started
-            </Typography>
-            <Button variant="contained" onClick={() => navigate('/create-bid')}>
-              Create Bid
-            </Button>
+            {!showArchived && (
+              <Button variant="contained" onClick={() => navigate('/create-bid')} sx={{ mt: 2 }}>Create Bid</Button>
+            )}
           </Box>
         )}
       </Box>
 
-      {/* DESKTOP VIEW - Table Layout */}
+      {/* DESKTOP VIEW */}
       <Box sx={{ display: { xs: 'none', md: 'block' }, overflowX: 'auto' }}>
-        <table
-          style={{
-            width: "100%",
-            borderCollapse: "collapse",
-            background: "white",
-          }}
-        >
+        <table style={{ width: "100%", borderCollapse: "collapse", background: "white" }}>
           <thead>
-            <tr
-              style={{
-                background: "#f2f2f2",
-                textAlign: "left",
-                borderBottom: "2px solid #ccc",
-              }}
-            >
+            <tr style={{ background: "#f2f2f2", textAlign: "left", borderBottom: "2px solid #ccc" }}>
               <th style={{ padding: 10 }}>Customer</th>
-              <th style={{ padding: 10 }}>Amount ($)</th>
+              <th style={{ padding: 10 }}>Amount</th>
               <th style={{ padding: 10 }}>Description</th>
-              <th style={{ padding: 10 }}>Materials</th>
               <th style={{ padding: 10 }}>Date</th>
+              {showArchived && <th style={{ padding: 10 }}>Archived</th>}
               <th style={{ padding: 10 }}>Actions</th>
             </tr>
           </thead>
           <tbody>
-            {sortedBids.map((bid) => (
-              <tr key={bid.id} style={{ borderBottom: "1px solid #ddd" }}>
-                <td style={{ padding: 10 }}>{bid.customerName}</td>
-                <td style={{ padding: 10 }}>${bid.amount}</td>
-                <td style={{ padding: 10 }}>{bid.description}</td>
-                <td style={{ padding: 10 }}>{bid.materials}</td>
-                <td style={{ padding: 10 }}>
-                  {bid.createdAt ? new Date(bid.createdAt).toLocaleDateString() : 'â€”'}
-                </td>
-                <td style={{ padding: 10 }}>
-                  <Button
-                    variant="outlined"
-                    color="info"
-                    size="small"
-                    onClick={() => handleEdit(bid)}
-                    sx={{ mr: 1, mb: { xs: 1, lg: 0 } }}
-                  >
-                    Edit
-                  </Button>
-                  <Button
-                    variant="outlined"
-                    color="primary"
-                    size="small"
-                    onClick={() => handleGeneratePDF(bid)}
-                    sx={{ mr: 1, mb: { xs: 1, lg: 0 } }}
-                  >
-                    View PDF
-                  </Button>
-                  <Button
-                    variant="outlined"
-                    color="success"
-                    size="small"
-                    onClick={() => handleCreateContract(bid)}
-                    sx={{ mr: 1, mb: { xs: 1, lg: 0 } }}
-                  >
-                    Create Contract
-                  </Button>
-                  <Button
-                    variant="outlined"
-                    size="small"
-                    startIcon={<DescriptionIcon />}
-                    onClick={() => exportBidToWord(bid)}
-                    sx={{ mr: 1, mb: { xs: 1, lg: 0 } }}
-                  >
-                    Word
-                  </Button>
-                  <Button
-                    variant="outlined"
-                    color="error"
-                    size="small"
-                    onClick={() => handleDelete(bid)}
-                  >
-                    Delete
-                  </Button>
-                </td>
-              </tr>
-            ))}
-            
+            {sortedBids.map((bid) => {
+              const days = daysSinceEdit(bid);
+              const daysLeft = days !== null ? 30 - days : null;
+              const isExpiringSoon = !showArchived && daysLeft !== null && daysLeft <= 7 && daysLeft > 0;
+              const isSigned = bid.clientSignature && bid.contractorSignature;
+              return (
+                <tr key={bid.id} style={{ borderBottom: "1px solid #ddd", backgroundColor: isExpiringSoon ? '#fffde7' : 'white' }}>
+                  <td style={{ padding: 10 }}>
+                    <strong>{bid.customerName}</strong>
+                    {isSigned && <Chip label="✅ Signed" color="success" size="small" sx={{ ml: 1 }} />}
+                    {isExpiringSoon && <Chip label={`⚠️ ${daysLeft}d left`} color="warning" size="small" sx={{ ml: 1 }} />}
+                  </td>
+                  <td style={{ padding: 10 }}>${bid.amount}</td>
+                  <td style={{ padding: 10 }}>{bid.description}</td>
+                  <td style={{ padding: 10 }}>
+                    {bid.createdAt ? new Date(bid.createdAt).toLocaleDateString() : '—'}
+                    {bid.updatedAt && bid.updatedAt !== bid.createdAt && (
+                      <Typography variant="caption" color="text.secondary" display="block">
+                        Edited: {new Date(bid.updatedAt).toLocaleDateString()}
+                      </Typography>
+                    )}
+                  </td>
+                  {showArchived && (
+                    <td style={{ padding: 10 }}>
+                      {bid.archivedAt ? new Date(bid.archivedAt).toLocaleDateString() : '—'}
+                      <Typography variant="caption" color="text.secondary" display="block">
+                        {bid.archivedBy === 'auto' ? 'Auto-archived' : 'Manual'}
+                      </Typography>
+                    </td>
+                  )}
+                  <td style={{ padding: 10 }}>
+                    {!showArchived && (<>
+                      <Button variant="outlined" color="info" size="small" onClick={() => handleEdit(bid)} sx={{ mr: 1, mb: 1 }}>Edit</Button>
+                      <Button variant="outlined" color="primary" size="small" onClick={() => handleGeneratePDF(bid)} sx={{ mr: 1, mb: 1 }}>PDF</Button>
+                      <Button variant="outlined" color="success" size="small" onClick={() => handleCreateContract(bid)} sx={{ mr: 1, mb: 1 }}>Contract</Button>
+                      <Button variant="outlined" size="small" startIcon={<DescriptionIcon />} onClick={() => exportBidToWord(bid)} sx={{ mr: 1, mb: 1 }}>Word</Button>
+                      <Button variant="outlined" color="warning" size="small" onClick={() => handleArchive(bid)} sx={{ mr: 1, mb: 1 }}>Archive</Button>
+                      <Button variant="outlined" color="error" size="small" onClick={() => handleDelete(bid)}>Delete</Button>
+                    </>)}
+                    {showArchived && (<>
+                      <Button variant="outlined" color="success" size="small" onClick={() => handleRestore(bid)} sx={{ mr: 1 }}>↩ Restore</Button>
+                      <Button variant="outlined" color="error" size="small" onClick={() => handleDelete(bid)}>Delete Permanently</Button>
+                    </>)}
+                  </td>
+                </tr>
+              );
+            })}
             {sortedBids.length === 0 && (
               <tr>
-                <td colSpan="6" style={{ padding: 40, textAlign: 'center' }}>
+                <td colSpan={showArchived ? 6 : 5} style={{ padding: 40, textAlign: 'center' }}>
                   <Typography variant="h6" color="text.secondary">
-                    No Bids Yet
+                    {showArchived ? 'No archived bids' : 'No Bids Yet'}
                   </Typography>
-                  <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-                    Create your first bid to get started
-                  </Typography>
-                  <Button variant="contained" onClick={() => navigate('/create-bid')}>
-                    Create Bid
-                  </Button>
+                  {!showArchived && (
+                    <Button variant="contained" onClick={() => navigate('/create-bid')} sx={{ mt: 2 }}>Create Bid</Button>
+                  )}
                 </td>
               </tr>
             )}
@@ -524,7 +504,7 @@ function HomeRedirect() {
     return null;
   }
 
-  return <Dashboard />;
+  return <EnhancedDashboard />;
 }
 
 // ------------------------- APP CHROME -------------------------

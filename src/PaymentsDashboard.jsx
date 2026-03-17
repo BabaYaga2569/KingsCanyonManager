@@ -15,6 +15,7 @@ import DownloadIcon from "@mui/icons-material/Download";
 import SortIcon from "@mui/icons-material/Sort";
 import ReceiptIcon from "@mui/icons-material/Receipt";
 import DeleteIcon from "@mui/icons-material/Delete";
+import { exportPaymentsToExcel } from './utils/kclExportUtils';
 import { markAsViewed } from './useNotificationCounts';
 import generatePaymentReceipt from './pdf/generatePaymentReceipt';
 import { viewPaymentReceiptPDF } from './utils/pdfViewerUtils';
@@ -320,14 +321,24 @@ export default function PaymentsDashboard() {
         }}
       >
         <Typography variant="h5">Payments Dashboard</Typography>
-        <Button
-          variant="outlined"
-          startIcon={<DownloadIcon />}
-          onClick={handleExportCSV}
-          size="small"
-        >
-          Export CSV
-        </Button>
+        <Box sx={{ display: 'flex', gap: 1 }}>
+          <Button
+            variant="outlined"
+            startIcon={<DownloadIcon />}
+            onClick={() => exportPaymentsToExcel(filteredPayments)}
+            size="small"
+          >
+            Excel
+          </Button>
+          <Button
+            variant="outlined"
+            startIcon={<DownloadIcon />}
+            onClick={handleExportCSV}
+            size="small"
+          >
+            CSV
+          </Button>
+        </Box>
       </Box>
 
       {/* Summary Cards */}
