@@ -72,6 +72,62 @@ export default function TimeClock() {
     return () => clearInterval(interval);
   }, [clockedIn, currentEntry, onLunch, lunchStartTime, totalLunchTime]);
 
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  const calculateDistanceFeet = (lat1, lng1, lat2, lng2) => {
+    const R = 20902231;
+    const dLat = ((lat2 - lat1) * Math.PI) / 180;
+    const dLng = ((lng2 - lng1) * Math.PI) / 180;
+
+    const a =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos((lat1 * Math.PI) / 180) *
+        Math.cos((lat2 * Math.PI) / 180) *
+        Math.sin(dLng / 2) ** 2;
+
+    return Math.round(R * 2 * Math.asin(Math.sqrt(a)));
+  };
+
+  const getCurrentPositionAsync = () =>
+    new Promise((resolve, reject) =>
+      navigator.geolocation.getCurrentPosition(resolve, reject, {
+        enableHighAccuracy: true,
+        timeout: 20000,
+        maximumAge: 0,
+      })
+    );
+
+  const getFreshGpsReading = async () => {
+    let lastError = null;
+
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const position = await getCurrentPositionAsync();
+        const { latitude, longitude, accuracy } = position.coords;
+
+        console.log(
+          `📍 GPS attempt ${attempt}: ${latitude}, ${longitude} (±${Math.round(accuracy)} m)`
+        );
+
+        return {
+          latitude,
+          longitude,
+          accuracyMeters: Math.round(accuracy),
+          accuracyFeet: Math.round(accuracy * 3.28084),
+          attempt,
+        };
+      } catch (error) {
+        lastError = error;
+        console.warn(`📍 GPS attempt ${attempt} failed:`, error);
+        if (attempt < 2) {
+          await wait(3000);
+        }
+      }
+    }
+
+    throw lastError;
+  };
+
   const loadEmployeeInfo = async () => {
     try {
       const usersSnap = await getDocs(collection(db, "users"));
@@ -265,15 +321,9 @@ export default function TimeClock() {
       return { passed: false, gpsData: {} };
     }
 
-    let position;
+    let gpsReading;
     try {
-      position = await new Promise((resolve, reject) =>
-        navigator.geolocation.getCurrentPosition(resolve, reject, {
-          enableHighAccuracy: true,
-          timeout: 20000,
-          maximumAge: 0,
-        })
-      );
+      gpsReading = await getFreshGpsReading();
     } catch (e) {
       console.error("📍 Geolocation error:", e);
 
@@ -301,8 +351,10 @@ export default function TimeClock() {
       return { passed: false, gpsData: {} };
     }
 
-    const { latitude, longitude, accuracy } = position.coords;
-    console.log(`📍 Crew position: ${latitude}, ${longitude} (±${Math.round(accuracy)}ft)`);
+    const { latitude, longitude, accuracyMeters, accuracyFeet, attempt } = gpsReading;
+    console.log(
+      `📍 Crew position: ${latitude}, ${longitude} (±${accuracyMeters} m / ${accuracyFeet} ft)`
+    );
 
     const jobLat = customerDocData?.geoLat || null;
     const jobLng = customerDocData?.geoLng || null;
@@ -327,23 +379,17 @@ export default function TimeClock() {
 
     console.log(`📍 Job site (stored coords): ${jobLat}, ${jobLng}`);
 
-    const R = 20902231;
-    const dLat = ((jobLat - latitude) * Math.PI) / 180;
-    const dLng = ((jobLng - longitude) * Math.PI) / 180;
-    const a =
-      Math.sin(dLat / 2) ** 2 +
-      Math.cos((latitude * Math.PI) / 180) *
-        Math.cos((jobLat * Math.PI) / 180) *
-        Math.sin(dLng / 2) ** 2;
-    const distanceFeet = Math.round(R * 2 * Math.asin(Math.sqrt(a)));
-    const distanceMiles = (distanceFeet / 5280).toFixed(2);
+    let distanceFeet = calculateDistanceFeet(latitude, longitude, jobLat, jobLng);
+    let distanceMiles = (distanceFeet / 5280).toFixed(2);
 
     console.log(`📍 Distance to job site: ${distanceFeet} ft (${distanceMiles} mi)`);
 
-    const gpsData = {
+    let gpsData = {
       gpsLat: latitude,
       gpsLng: longitude,
-      gpsAccuracy: Math.round(accuracy),
+      gpsAccuracyMeters: accuracyMeters,
+      gpsAccuracyFeet: accuracyFeet,
+      gpsAttemptCount: attempt,
       gpsDistanceFeet: distanceFeet,
       gpsDistanceMiles: parseFloat(distanceMiles),
       jobAddress,
@@ -352,12 +398,75 @@ export default function TimeClock() {
     };
 
     if (distanceFeet > 500) {
+      console.warn("📍 First distance check failed, retrying GPS before blocking...");
+      await wait(3000);
+
+      try {
+        const retryReading = await getFreshGpsReading();
+        const retryDistanceFeet = calculateDistanceFeet(
+          retryReading.latitude,
+          retryReading.longitude,
+          jobLat,
+          jobLng
+        );
+        const retryDistanceMiles = (retryDistanceFeet / 5280).toFixed(2);
+
+        console.log(
+          `📍 Retry distance: ${retryDistanceFeet} ft (${retryDistanceMiles} mi)`
+        );
+
+        gpsData = {
+          gpsLat: retryReading.latitude,
+          gpsLng: retryReading.longitude,
+          gpsAccuracyMeters: retryReading.accuracyMeters,
+          gpsAccuracyFeet: retryReading.accuracyFeet,
+          gpsAttemptCount: retryReading.attempt,
+          gpsDistanceFeet: retryDistanceFeet,
+          gpsDistanceMiles: parseFloat(retryDistanceMiles),
+          jobAddress,
+          gpsJobLat: jobLat,
+          gpsJobLng: jobLng,
+        };
+
+        if (retryDistanceFeet <= 500) {
+          console.log("✅ Retry GPS check passed");
+          return { passed: true, gpsData };
+        }
+
+        await Swal.fire({
+          icon: "error",
+          title: "Too Far from Job Site",
+          html: `You are <strong>${retryDistanceFeet.toLocaleString()} ft (${retryDistanceMiles} mi)</strong> from the job site.<br/><br/>
+                 You must be within <strong>500 ft</strong> to clock in.<br/>
+                 <small style="color:#888">${jobAddress}</small><br/><br/>
+                 <small style="color:#888">GPS accuracy: ±${retryReading.accuracyFeet} ft</small>`,
+          confirmButtonText: "OK",
+        });
+
+        try {
+          await notifyFailedClockIn(
+            employeeName,
+            selectedJobName,
+            retryDistanceFeet,
+            parseFloat(retryDistanceMiles),
+            jobAddress
+          );
+        } catch (e) {
+          console.error("📍 Failed to send blocked clock-in notification:", e);
+        }
+
+        return { passed: false, gpsData };
+      } catch (retryError) {
+        console.error("📍 Retry GPS failed:", retryError);
+      }
+
       await Swal.fire({
         icon: "error",
         title: "Too Far from Job Site",
         html: `You are <strong>${distanceFeet.toLocaleString()} ft (${distanceMiles} mi)</strong> from the job site.<br/><br/>
                You must be within <strong>500 ft</strong> to clock in.<br/>
-               <small style="color:#888">${jobAddress}</small>`,
+               <small style="color:#888">${jobAddress}</small><br/><br/>
+               <small style="color:#888">GPS accuracy: ±${accuracyFeet} ft</small>`,
         confirmButtonText: "OK",
       });
 
@@ -398,6 +507,8 @@ export default function TimeClock() {
         crewId: user.uid,
         crewName: employeeName,
         crewEmail: user.email,
+        crewRole: userRole || "employee",
+        isAdminClockTest: userRole === "admin",
         jobId: selectedJob,
         jobName: job?.displayName || "Unknown Job",
         jobDescription: job?.displayName || "No description",
@@ -532,32 +643,19 @@ export default function TimeClock() {
 
       let gpsOutData = {};
       try {
-        const position = await new Promise((resolve, reject) =>
-          navigator.geolocation.getCurrentPosition(resolve, reject, {
-            enableHighAccuracy: true,
-            timeout: 20000,
-            maximumAge: 0,
-          })
-        );
+        const position = await getCurrentPositionAsync();
         const { latitude, longitude, accuracy } = position.coords;
 
         const jobLat = currentEntry.gpsJobLat || null;
         const jobLng = currentEntry.gpsJobLng || null;
 
         if (jobLat && jobLng) {
-          const R = 20902231;
-          const dLat = ((jobLat - latitude) * Math.PI) / 180;
-          const dLng = ((jobLng - longitude) * Math.PI) / 180;
-          const a =
-            Math.sin(dLat / 2) ** 2 +
-            Math.cos((latitude * Math.PI) / 180) *
-              Math.cos((jobLat * Math.PI) / 180) *
-              Math.sin(dLng / 2) ** 2;
-          const distanceFeet = Math.round(R * 2 * Math.asin(Math.sqrt(a)));
+          const distanceFeet = calculateDistanceFeet(latitude, longitude, jobLat, jobLng);
           gpsOutData = {
             gpsOutLat: latitude,
             gpsOutLng: longitude,
-            gpsOutAccuracy: Math.round(accuracy),
+            gpsOutAccuracyMeters: Math.round(accuracy),
+            gpsOutAccuracyFeet: Math.round(accuracy * 3.28084),
             gpsOutDistanceFeet: distanceFeet,
             gpsOutDistanceMiles: parseFloat((distanceFeet / 5280).toFixed(2)),
           };
@@ -565,7 +663,8 @@ export default function TimeClock() {
           gpsOutData = {
             gpsOutLat: latitude,
             gpsOutLng: longitude,
-            gpsOutAccuracy: Math.round(accuracy),
+            gpsOutAccuracyMeters: Math.round(accuracy),
+            gpsOutAccuracyFeet: Math.round(accuracy * 3.28084),
           };
         }
         console.log("📍 Clock-out GPS captured:", gpsOutData);
@@ -667,6 +766,17 @@ export default function TimeClock() {
       <Typography variant="body2" color="text.secondary" sx={{ textAlign: "center", mb: 2 }}>
         Welcome, {employeeInfo?.name || user.displayName || user.email}
       </Typography>
+
+      {userRole === "admin" && (
+        <Paper sx={{ p: 2, mb: 3, backgroundColor: "#fff3e0", border: "1px solid #ffcc80" }}>
+          <Typography variant="subtitle2" fontWeight="bold" color="warning.dark">
+            Admin Test Mode
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            Your clock-ins will work like an employee clock-in so you can test GPS and job-site behavior in the field.
+          </Typography>
+        </Paper>
+      )}
 
       <Card sx={{ mb: 3, backgroundColor: "#e3f2fd" }}>
         <CardContent>

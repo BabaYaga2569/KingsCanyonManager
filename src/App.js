@@ -17,8 +17,7 @@ import {
   AppBar,
   Toolbar,
   Typography,
-  Button,
-  ButtonGroup,
+  Button,  
   Container,
   IconButton,
   Drawer,
@@ -515,22 +514,15 @@ function AppContent() {
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
   const [drawerOpen, setDrawerOpen] = useState(false);
 
-  // Get auth context
-
-  // Get auth context
   const { userRole, logout, user } = useAuth();
-  
-  // NEW: User data state for first-login detection
   const [userData, setUserData] = useState(null);
 
-  // Load notification counts
   const { counts, loading: countsLoading } = useNotificationCounts();
- 
+
   useEffect(() => {
     window.dispatchEvent(new Event('refreshBadges'));
   }, [location.pathname]);
 
-  // Auto-refresh when user comes back to the app (iPhone/Android/desktop)
   useEffect(() => {
     let lastVersion = null;
 
@@ -545,7 +537,7 @@ function AppContent() {
           lastVersion = version;
         }
       } catch (e) {
-        // Network error, ignore
+        // ignore network errors
       }
     };
 
@@ -556,21 +548,19 @@ function AppContent() {
     };
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
-    checkForUpdate(); // Check on first load
+    checkForUpdate();
 
     return () => {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, []);
 
-  // NEW: Listen to user data changes for first-login detection
   useEffect(() => {
     if (!user) {
       setUserData(null);
       return;
     }
 
-    // Subscribe to user document changes
     const unsubscribe = onSnapshot(
       doc(db, 'users', user.uid),
       (docSnap) => {
@@ -586,41 +576,36 @@ function AppContent() {
     return () => unsubscribe();
   }, [user]);
 
-  // NEW: First-login NDA redirect logic
   useEffect(() => {
     if (!user || !userData) return;
-    
+
     const currentPath = location.pathname;
-    
-    // Don't redirect if already on NDA page or public pages
+
     if (currentPath === '/nda-signing' || currentPath.startsWith('/public/')) {
       return;
     }
 
-    // Check if employee needs to sign NDA
     if (userData.firstLogin === true && userData.ndaSigned === false) {
       console.log('First login detected, redirecting to NDA signing...');
       navigate('/nda-signing');
     }
   }, [user, userData, location.pathname, navigate]);
+
   const isActive = (p) => location.pathname === p;
-  
   const isPublicPage = location.pathname.startsWith('/public/');
 
-  // ROLE-SPECIFIC MENU ITEMS
   let menuItems = [];
 
   if (userRole === 'crew') {
-    // CREW sees only time clock and their hours
     menuItems = [
       { label: "Time Clock", path: "/time-clock", notificationKey: null },
       { label: "My Profile", path: "/profile", notificationKey: null },
       { label: "My Hours", path: "/my-hours", notificationKey: null },
     ];
   } else {
-    // ADMIN and GOD see full menu
     menuItems = [
       { label: "Dashboard", path: "/", notificationKey: null },
+      { label: "Time Clock", path: "/time-clock", notificationKey: null }, // added for admin/god
       { label: "Bids", path: "/bids", notificationKey: "bids" },
       { label: "Create Bid", path: "/create-bid", notificationKey: null },
       { label: "Contracts", path: "/contracts", notificationKey: "contracts" },
@@ -630,7 +615,6 @@ function AppContent() {
       { label: "Customers", path: "/customers", notificationKey: "customers" },
       { label: "Schedule", path: "/schedule-dashboard", notificationKey: "schedules" },
       { label: "Calendar", path: "/calendar-view", notificationKey: null },
-      // 🔒 CRITICAL: Maintenance menu item - DO NOT REMOVE
       { label: "Maintenance", path: "/maintenance", notificationKey: null },
       { label: "Payments", path: "/payments-dashboard", notificationKey: "payments" },
       { label: "Expenses", path: "/expenses-manager", notificationKey: "expenses" },
@@ -638,7 +622,7 @@ function AppContent() {
       { label: "Approve Time", path: "/approve-time", notificationKey: null },
       { label: "Tax Report", path: "/tax-report", notificationKey: null },
       { label: "Equipment", path: "/equipment-manager", notificationKey: null },
-	  { label: "Employees", path: "/employees", notificationKey: null },
+      { label: "Employees", path: "/employees", notificationKey: null },
       { label: "SMS Notifications", path: "/notification-settings", notificationKey: null },
       { label: "My Profile", path: "/profile", notificationKey: null },
     ];
@@ -660,7 +644,6 @@ function AppContent() {
     }
   };
 
-  // Role badge emoji
   const getRoleBadge = () => {
     if (userRole === 'god') return '⚡';
     if (userRole === 'admin') return '🔧';
@@ -670,91 +653,149 @@ function AppContent() {
 
   return (
     <>
-      {/* Auto-update notification */}
       <UpdateNotification />
-      
+
       {!isPublicPage && (
         <>
           <AppBar position="static" sx={{ backgroundColor: "#1565c0" }}>
-            <Toolbar sx={{ minHeight: { xs: 56, sm: 64 } }}>
-              <Typography variant="h6" sx={{ flexGrow: 1, fontSize: { xs: '1.1rem', sm: '1.25rem' } }}>
+            <Toolbar
+              sx={{
+                minHeight: { xs: 56, sm: 64 },
+                alignItems: isMobile ? "center" : "flex-start",
+                py: isMobile ? 0 : 1.5,
+              }}
+            >
+              <Typography
+                variant="h6"
+                sx={{
+                  flexShrink: 0,
+                  mr: 2,
+                  fontSize: { xs: '1.1rem', sm: '1.25rem' },
+                  alignSelf: isMobile ? "center" : "flex-start",
+                }}
+              >
                 KCL Manager {getRoleBadge()}
               </Typography>
 
               {isMobile ? (
                 <>
-                  <RefreshButton isMobile={true} />
-                  <IconButton
-                    color="inherit"
-                    onClick={handleLogout}
-                    title={`Logout (${user?.email})`}
-                    sx={{ mr: 1 }}
-                  >
-                    <LogoutIcon />
-                  </IconButton>
-                  <IconButton
-                    color="inherit"
-                    edge="end"
-                    onClick={handleDrawerToggle}
-                  >
-                    <MenuIcon />
-                  </IconButton>
+                  <Box sx={{ ml: "auto", display: "flex", alignItems: "center" }}>
+                    <RefreshButton isMobile={true} />
+                    <IconButton
+                      color="inherit"
+                      onClick={handleLogout}
+                      title={`Logout (${user?.email})`}
+                      sx={{ mr: 1 }}
+                    >
+                      <LogoutIcon />
+                    </IconButton>
+                    <IconButton
+                      color="inherit"
+                      edge="end"
+                      onClick={handleDrawerToggle}
+                    >
+                      <MenuIcon />
+                    </IconButton>
+                  </Box>
                 </>
               ) : (
-                <>
-                  <ButtonGroup variant="text" sx={{ mr: 2 }}>
-                    {menuItems.map((item) => {
-                      const count = item.notificationKey ? counts[item.notificationKey] : 0;
-                      const showBadge = count > 0 && !countsLoading;
+                <Box
+                  sx={{
+                    display: "flex",
+                    flexDirection: "column",
+                    flexGrow: 1,
+                    minWidth: 0,
+                  }}
+                >
+                  <Box
+                    sx={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "flex-start",
+                      gap: 2,
+                      width: "100%",
+                    }}
+                  >
+                    <Box
+                      sx={{
+                        display: "flex",
+                        flexWrap: "wrap",
+                        gap: 0.75,
+                        alignItems: "center",
+                        flexGrow: 1,
+                        minWidth: 0,
+                      }}
+                    >
+                      {menuItems.map((item) => {
+                        const count = item.notificationKey ? counts[item.notificationKey] : 0;
+                        const showBadge = count > 0 && !countsLoading;
 
-                      return (
-                        <Button
-                          key={item.path}
-                          component={Link}
-                          to={item.path}
-                          sx={{
-                            color: isActive(item.path) ? "#fff" : "rgba(255,255,255,0.7)",
-                            backgroundColor: isActive(item.path)
-                              ? "rgba(255,255,255,0.1)"
-                              : "transparent",
-                            fontWeight: isActive(item.path) ? 700 : 500,
-                            fontSize: { sm: '0.75rem', md: '0.875rem' },
-                            px: { sm: 1, md: 1.5 },
-                            "&:hover": {
-                              backgroundColor: "rgba(255,255,255,0.15)",
-                              color: "#fff",
-                            },
-                          }}
-                        >
-                          <Badge 
-                            badgeContent={showBadge ? count : 0} 
-                            color="error"
+                        return (
+                          <Button
+                            key={item.path}
+                            component={Link}
+                            to={item.path}
+                            size="small"
                             sx={{
-                              '& .MuiBadge-badge': {
-                                fontSize: '0.7rem',
-                                minWidth: '18px',
-                                height: '18px',
-                                padding: '0 4px',
-                              }
+                              color: isActive(item.path) ? "#fff" : "rgba(255,255,255,0.78)",
+                              backgroundColor: isActive(item.path)
+                                ? "rgba(255,255,255,0.14)"
+                                : "transparent",
+                              fontWeight: isActive(item.path) ? 700 : 500,
+                              fontSize: "0.78rem",
+                              lineHeight: 1.2,
+                              px: 1.2,
+                              py: 0.6,
+                              minWidth: "auto",
+                              borderRadius: 1.5,
+                              textTransform: "uppercase",
+                              whiteSpace: "nowrap",
+                              "&:hover": {
+                                backgroundColor: "rgba(255,255,255,0.15)",
+                                color: "#fff",
+                              },
                             }}
                           >
-                            {item.label}
-                          </Badge>
-                        </Button>
-                      );
-                    })}
-                  </ButtonGroup>
+                            <Badge
+                              badgeContent={showBadge ? count : 0}
+                              color="error"
+                              sx={{
+                                '& .MuiBadge-badge': {
+                                  fontSize: '0.68rem',
+                                  minWidth: '18px',
+                                  height: '18px',
+                                  padding: '0 4px',
+                                }
+                              }}
+                            >
+                              {item.label}
+                            </Badge>
+                          </Button>
+                        );
+                      })}
+                    </Box>
 
-                  <RefreshButton isMobile={false} />
-                  <Button
-                    color="inherit"
-                    onClick={handleLogout}
-                    startIcon={<LogoutIcon />}
-                    title={user?.email || 'Logout'}
-                  >
-                    Logout
-                  </Button>
-                </>
+                    <Box
+                      sx={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 1,
+                        flexShrink: 0,
+                      }}
+                    >
+                      <RefreshButton isMobile={false} />
+                      <Button
+                        color="inherit"
+                        onClick={handleLogout}
+                        startIcon={<LogoutIcon />}
+                        title={user?.email || 'Logout'}
+                        sx={{ whiteSpace: "nowrap" }}
+                      >
+                        Logout
+                      </Button>
+                    </Box>
+                  </Box>
+                </Box>
               )}
             </Toolbar>
           </AppBar>
@@ -789,8 +830,8 @@ function AppContent() {
                       backgroundColor: isActive(item.path) ? "#e3f2fd" : "transparent",
                     }}
                   >
-                    <Badge 
-                      badgeContent={showBadge ? count : 0} 
+                    <Badge
+                      badgeContent={showBadge ? count : 0}
                       color="error"
                       sx={{ width: '100%' }}
                     >
@@ -810,18 +851,11 @@ function AppContent() {
       )}
 
       <Routes>
-        {/* CREW ROUTES */}
         <Route path="/time-clock" element={<TimeClock />} />
         <Route path="/my-hours" element={<MyHours />} />
         <Route path="/profile" element={<UserProfile />} />
-        
-        {/* ADMIN/GOD ROUTES */}
         <Route path="/approve-time" element={<ApproveTime />} />
-        
-        {/* HOME ROUTE - REDIRECTS CREW TO TIME CLOCK */}
         <Route path="/" element={<HomeRedirect />} />
-        
-        {/* EXISTING ROUTES */}
         <Route path="/bids" element={<BidsList />} />
         <Route path="/bid/:id" element={<BidEditor />} />
         <Route path="/create-bid" element={<CreateBid />} />
@@ -829,43 +863,34 @@ function AppContent() {
         <Route path="/contract/:id" element={<ContractEditor />} />
         <Route path="/invoices" element={<InvoicesDashboard />} />
         <Route path="/invoice/:id" element={<InvoiceEditor />} />
-		{/* OLD migration page - disabled */}
-        {/* <Route path="/migration" element={<MigrationPage />} /> */}
-
-        {/* NEW migration dashboard */}
         <Route path="/migration" element={<MigrationDashboard />} />
         <Route path="/jobs" element={<JobsManager />} />
-        <Route path="/notes" element={<NotesManager />} /> {/* â† ADDED: Notes route */}
+        <Route path="/notes" element={<NotesManager />} />
         <Route path="/customers" element={<CustomersDashboard />} />
         <Route path="/customer-edit/:id" element={<CustomerEditor />} />
-		<Route path="/expense-repair" element={<ExpenseRepairTool />} />
+        <Route path="/expense-repair" element={<ExpenseRepairTool />} />
         <Route path="/customer/:id" element={<CustomerProfile />} />
         <Route path="/schedule-job" element={<ScheduleJob />} />
         <Route path="/migrate-tokens" element={<MigrationPage />} />
         <Route path="/schedule-dashboard" element={<ScheduleDashboard />} />
-		<Route path="/jim-slayer-fix" element={<JimSlayerExpenseFix />} />
+        <Route path="/jim-slayer-fix" element={<JimSlayerExpenseFix />} />
         <Route path="/calendar-view" element={<CalendarView />} />
-        {/* 🔒 CRITICAL: Maintenance routes - DO NOT REMOVE */}
         <Route path="/maintenance" element={<MaintenanceDashboard />} />
         <Route path="/maintenance/:id" element={<MaintenanceEditor />} />
-        <Route path="/notification-settings" element={<NotificationSettings />} /> {/* NEW: SMS Settings */}
-        {/* ========================================= */}
+        <Route path="/notification-settings" element={<NotificationSettings />} />
         <Route path="/payment-tracker/:id" element={<PaymentTracker />} />
         <Route path="/payments-dashboard" element={<PaymentsDashboard />} />
         <Route path="/crew-manager" element={<CrewManager />} />
         <Route path="/equipment-manager" element={<EquipmentManager />} />
-		<Route path="/employees" element={<EmployeeAccountManager currentUser={user} currentUserRole={userRole} />} />
+        <Route path="/employees" element={<EmployeeAccountManager currentUser={user} currentUserRole={userRole} />} />
         <Route path="/nda/:crewId" element={<NDAEditor />} />
         <Route path="/public/nda/:crewId" element={<NDASigningPage />} />
-        
-        {/* NEW: Employee First-Login NDA Signing */}
-        <Route 
-          path="/nda-signing" 
+        <Route
+          path="/nda-signing"
           element={
-            <NDASigning 
-              currentUser={user} 
+            <NDASigning
+              currentUser={user}
               onNDAComplete={() => {
-                // Refresh user data after NDA signing
                 if (user) {
                   getDoc(doc(db, 'users', user.uid)).then((docSnap) => {
                     if (docSnap.exists()) {
@@ -876,16 +901,15 @@ function AppContent() {
                 navigate('/');
               }}
             />
-          } 
+          }
         />
         <Route path="/expenses-manager" element={<ExpensesManager />} />
-        <Route path="/crew-payroll" element={<IntegratedPayroll />} /> {/* ✅ CHANGED: New integrated system */}
+        <Route path="/crew-payroll" element={<IntegratedPayroll />} />
         <Route path="/crew-payment-history" element={<CrewPaymentHistory />} />
         <Route path="/tax-report" element={<TaxReport />} />
         <Route path="/job-expenses/:id" element={<JobExpenses />} />
-        
         <Route path="/public/sign/:contractId" element={<ContractSigningPage />} />
-		<Route path="/sign-bid/:bidId" element={<BidSigningPage />} />
+        <Route path="/sign-bid/:bidId" element={<BidSigningPage />} />
         <Route path="/public/pay/:invoiceId" element={<PaymentPortal />} />
       </Routes>
     </>
