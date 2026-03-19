@@ -188,11 +188,12 @@ export default function TimeClock() {
 
   // 📍 GPS geofence check — looks up customer address from job's customerId
   const runGpsCheck = async (job) => {
-	  // Skip GPS if employee has requireGps turned off (office/admin hourly staff)
-  if (employeeInfo?.requireGps === false) {
-    console.log("📍 GPS check skipped — requireGps disabled for this employee");
-    return { passed: true, gpsData: {} };
-  }
+    // Skip GPS if employee has requireGps turned off (office/admin hourly staff)
+    if (employeeInfo?.requireGps === false) {
+      console.log("📍 GPS check skipped — requireGps disabled for this employee");
+      return { passed: true, gpsData: {} };
+    }
+
     // Skip GPS for weed service jobs
     const jobType = (job?.jobType || "").toLowerCase();
     const jobName = (job?.displayName || job?.clientName || "").toLowerCase();
@@ -230,13 +231,12 @@ export default function TimeClock() {
 
     if (!jobAddress) {
       await Swal.fire({
-        icon: "warning",
+        icon: "error",
         title: "No Address Found",
-        text: "Could not verify job site location. Clocking in anyway.",
-        timer: 3000,
-        showConfirmButton: false,
+        html: "This job does not have a valid customer address.<br/><br/>You cannot clock in until a manager fixes the address.",
+        confirmButtonText: "OK",
       });
-      return { passed: true, gpsData: {} };
+      return { passed: false, gpsData: {} };
     }
 
     // Step 2: Get crew GPS position
@@ -251,34 +251,39 @@ export default function TimeClock() {
       );
     } catch (e) {
       console.error("📍 Geolocation error:", e);
+
+      const denied =
+        e?.code === 1 ||
+        e?.code === e?.PERMISSION_DENIED;
+
       await Swal.fire({
-        icon: "warning",
-        title: "GPS Unavailable",
-        text: "Could not get your location. Clocking in anyway.",
-        timer: 3000,
-        showConfirmButton: false,
+        icon: "error",
+        title: denied ? "GPS Permission Required" : "GPS Unavailable",
+        html: denied
+          ? "You must allow location access to clock in."
+          : "Your location could not be determined. Please enable GPS/location services and try again.",
+        confirmButtonText: "OK",
       });
-      return { passed: true, gpsData: {} };
+
+      return { passed: false, gpsData: {} };
     }
 
     const { latitude, longitude, accuracy } = position.coords;
     console.log(`📍 Crew position: ${latitude}, ${longitude} (±${Math.round(accuracy)}ft)`);
 
     // Step 3: Use stored coordinates from customer doc (geocoded when address was saved)
-    // Fake or unverifiable addresses will have null coords and soft-allow clock-in
     const jobLat = customerDocData?.geoLat || null;
     const jobLng = customerDocData?.geoLng || null;
 
     if (!jobLat || !jobLng) {
       console.warn("📍 No verified coordinates for this customer — address was not geocoded on save");
       await Swal.fire({
-        icon: "warning",
+        icon: "error",
         title: "Address Not Verified",
-        html: `This job site has no verified GPS coordinates.<br/>Ask your manager to update the customer address.<br/><br/><small style="color:#888">Clocking in anyway.</small>`,
-        timer: 4000,
-        showConfirmButton: false,
+        html: "This job site has no verified GPS coordinates.<br/><br/>Ask your manager to update the customer address before clocking in.",
+        confirmButtonText: "OK",
       });
-      return { passed: true, gpsData: { gpsLat: latitude, gpsLng: longitude, gpsAccuracy: Math.round(accuracy), jobAddress } };
+      return { passed: false, gpsData: {} };
     }
 
     console.log(`📍 Job site (stored coords): ${jobLat}, ${jobLng}`);
