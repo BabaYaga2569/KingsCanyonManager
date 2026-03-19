@@ -9,21 +9,17 @@ import { db } from "./firebase";
 const PUSHOVER_API_URL = "https://api.pushover.net/1/messages.json";
 
 // Your Pushover credentials
-const PUSHOVER_TOKEN = "aka88i2ehjtm4r47d3zuqz7bhionvu"; // KCL Manager API Token
-const PUSHOVER_USER = "gnh1nvir8hovia25ohsdoq2ys8x1n3";  // KCL Alerts Group Key - notifies Steve & Darren
+const PUSHOVER_TOKEN = "aka88i2ehjtm4r47d3zuqz7bhionvu";
+const PUSHOVER_USER = "gnh1nvir8hovia25ohsdoq2ys8x1n3";
 
-// Priority levels
 const PRIORITY = {
-  LOWEST: -2,   // No sound, no vibration
-  LOW: -1,      // Quiet notification
-  NORMAL: 0,    // Default sound
-  HIGH: 1,      // High priority, bypasses quiet hours
-  EMERGENCY: 2, // Repeats until acknowledged (requires retry + expire)
+  LOWEST: -2,
+  LOW: -1,
+  NORMAL: 0,
+  HIGH: 1,
+  EMERGENCY: 2,
 };
 
-/**
- * Core function - sends a push notification via Pushover and logs to Firestore
- */
 async function sendPushoverNotification({
   title,
   message,
@@ -48,10 +44,9 @@ async function sendPushoverNotification({
     if (url) formData.append("url", url);
     if (urlTitle) formData.append("url_title", urlTitle);
 
-    // Emergency priority requires retry and expire
     if (priority === PRIORITY.EMERGENCY) {
-      formData.append("retry", 60);   // Retry every 60 seconds
-      formData.append("expire", 3600); // Stop after 1 hour
+      formData.append("retry", 60);
+      formData.append("expire", 3600);
     }
 
     const response = await fetch(PUSHOVER_API_URL, {
@@ -74,7 +69,6 @@ async function sendPushoverNotification({
     errorMsg = error.message;
   }
 
-  // Always log to Firestore for history
   try {
     await addDoc(collection(db, "notification_log"), {
       title,
@@ -88,18 +82,13 @@ async function sendPushoverNotification({
     console.warn("Failed to log notification to Firestore:", logError);
   }
 
-  return success
-    ? { success: true }
-    : { success: false, error: errorMsg };
+  return success ? { success: true } : { success: false, error: errorMsg };
 }
 
 // ============================================================
 // CREW / TIME CLOCK NOTIFICATIONS
 // ============================================================
 
-/**
- * Notify admin when a crew member clocks IN
- */
 export async function notifyCrewClockIn(employeeName, location = null, gpsData = null) {
   const time = new Date().toLocaleTimeString("en-US", {
     hour: "numeric",
@@ -108,7 +97,22 @@ export async function notifyCrewClockIn(employeeName, location = null, gpsData =
   });
 
   let gpsLine = "";
-  if (gpsData && gpsData.gpsDistanceFeet != null) {
+
+  if (gpsData?.gpsSkipped && gpsData?.gpsSkipReason === "weed_service") {
+    gpsLine = "\n🌿 GPS skipped for weed service";
+    if (gpsData.jobAddress) {
+      gpsLine += `\n📍 ${gpsData.jobAddress}`;
+    } else if (location) {
+      gpsLine += `\n📍 ${location}`;
+    }
+  } else if (gpsData?.gpsSkipped && gpsData?.gpsSkipReason === "employee_exempt") {
+    gpsLine = "\n🛠 GPS skipped for employee exemption";
+    if (gpsData.jobAddress) {
+      gpsLine += `\n📍 ${gpsData.jobAddress}`;
+    } else if (location) {
+      gpsLine += `\n📍 ${location}`;
+    }
+  } else if (gpsData && gpsData.gpsDistanceFeet != null) {
     const feet = gpsData.gpsDistanceFeet;
     const miles = gpsData.gpsDistanceMiles;
     const onSite = feet <= 500;
@@ -133,9 +137,6 @@ export async function notifyCrewClockIn(employeeName, location = null, gpsData =
   });
 }
 
-/**
- * Notify admin when a crew member clocks OUT
- */
 export async function notifyCrewClockOut(employeeName, hoursWorked = null, gpsData = null) {
   const time = new Date().toLocaleTimeString("en-US", {
     hour: "numeric",
@@ -168,9 +169,6 @@ export async function notifyCrewClockOut(employeeName, hoursWorked = null, gpsDa
   });
 }
 
-/**
- * Notify admin when a crew member clocks OUT far from the job site
- */
 export async function notifyFailedClockOut(employeeName, jobName, distanceFeet, distanceMiles, jobAddress = null, hoursWorked = null) {
   const time = new Date().toLocaleTimeString("en-US", {
     hour: "numeric",
@@ -190,9 +188,6 @@ export async function notifyFailedClockOut(employeeName, jobName, distanceFeet, 
   });
 }
 
-/**
- * Notify admin when a crew member is BLOCKED from clocking in (too far from job site)
- */
 export async function notifyFailedClockIn(employeeName, jobName, distanceFeet, distanceMiles, jobAddress = null) {
   const time = new Date().toLocaleTimeString("en-US", {
     hour: "numeric",
@@ -206,6 +201,58 @@ export async function notifyFailedClockIn(employeeName, jobName, distanceFeet, d
     type: "failed_clock_in",
     title: "⛔ Failed Clock-In Attempt",
     message: `${employeeName} tried to clock in at ${time}\n🔧 Job: ${jobName}\n📏 ${distanceFeet.toLocaleString()} ft away (${distanceMiles} mi) — BLOCKED${addressText}\nRequired: within 500 ft`,
+    priority: PRIORITY.HIGH,
+    sound: "siren",
+  });
+}
+
+export async function notifyClockInGpsDenied(employeeName, jobName, reason = "GPS permission denied") {
+  const time = new Date().toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
+
+  return sendPushoverNotification({
+    type: "clock_in_gps_denied",
+    title: "📵 Clock-In Blocked: GPS",
+    message: `${employeeName} tried to clock in at ${time}\n🔧 Job: ${jobName}\n🚫 BLOCKED — ${reason}`,
+    priority: PRIORITY.HIGH,
+    sound: "siren",
+  });
+}
+
+export async function notifyClockInNoAddress(employeeName, jobName, customerId = null) {
+  const time = new Date().toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
+
+  const customerText = customerId ? `\n🧾 Customer ID: ${customerId}` : "";
+
+  return sendPushoverNotification({
+    type: "clock_in_no_address",
+    title: "📍 Clock-In Blocked: No Address",
+    message: `${employeeName} tried to clock in at ${time}\n🔧 Job: ${jobName}\n🚫 BLOCKED — no valid customer address found${customerText}`,
+    priority: PRIORITY.HIGH,
+    sound: "siren",
+  });
+}
+
+export async function notifyClockInNoCoordinates(employeeName, jobName, jobAddress = null) {
+  const time = new Date().toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
+
+  const addressText = jobAddress ? `\n📍 ${jobAddress}` : "";
+
+  return sendPushoverNotification({
+    type: "clock_in_no_coordinates",
+    title: "🧭 Clock-In Blocked: No Coordinates",
+    message: `${employeeName} tried to clock in at ${time}\n🔧 Job: ${jobName}\n🚫 BLOCKED — address has no verified GPS coordinates${addressText}`,
     priority: PRIORITY.HIGH,
     sound: "siren",
   });
@@ -250,9 +297,6 @@ export async function notifyLunchEnd(employeeName, lunchMinutes = null, jobName 
 // CONTRACT NOTIFICATIONS
 // ============================================================
 
-/**
- * Notify when a client signs a contract
- */
 export async function notifyContractSigned(customerName, amount, contractId = null) {
   const formattedAmount = parseFloat(amount || 0).toLocaleString("en-US", {
     style: "currency",
@@ -268,9 +312,6 @@ export async function notifyContractSigned(customerName, amount, contractId = nu
   });
 }
 
-/**
- * Notify when a new contract is created
- */
 export async function notifyContractCreated(customerName, amount) {
   const formattedAmount = parseFloat(amount || 0).toLocaleString("en-US", {
     style: "currency",
@@ -289,9 +330,6 @@ export async function notifyContractCreated(customerName, amount) {
 // BID NOTIFICATIONS
 // ============================================================
 
-/**
- * Notify when a bid is viewed by the customer
- */
 export async function notifyBidViewed(customerName, amount) {
   const formattedAmount = parseFloat(amount || 0).toLocaleString("en-US", {
     style: "currency",
@@ -306,9 +344,6 @@ export async function notifyBidViewed(customerName, amount) {
   });
 }
 
-/**
- * Notify when a bid is accepted
- */
 export async function notifyBidAccepted(customerName, amount) {
   const formattedAmount = parseFloat(amount || 0).toLocaleString("en-US", {
     style: "currency",
@@ -324,9 +359,6 @@ export async function notifyBidAccepted(customerName, amount) {
   });
 }
 
-/**
- * Notify when a bid is declined
- */
 export async function notifyBidDeclined(customerName, amount) {
   const formattedAmount = parseFloat(amount || 0).toLocaleString("en-US", {
     style: "currency",
@@ -345,9 +377,6 @@ export async function notifyBidDeclined(customerName, amount) {
 // INVOICE NOTIFICATIONS
 // ============================================================
 
-/**
- * Notify when an invoice is paid
- */
 export async function notifyInvoicePaid(customerName, amount, paymentMethod = null) {
   const formattedAmount = parseFloat(amount || 0).toLocaleString("en-US", {
     style: "currency",
@@ -365,9 +394,6 @@ export async function notifyInvoicePaid(customerName, amount, paymentMethod = nu
   });
 }
 
-/**
- * Notify when an invoice is coming due (reminder)
- */
 export async function notifyInvoiceDueSoon(customerName, amount, daysUntilDue) {
   const formattedAmount = parseFloat(amount || 0).toLocaleString("en-US", {
     style: "currency",
@@ -385,9 +411,6 @@ export async function notifyInvoiceDueSoon(customerName, amount, daysUntilDue) {
   });
 }
 
-/**
- * Notify when an invoice is overdue
- */
 export async function notifyInvoiceOverdue(customerName, amount, daysOverdue) {
   const formattedAmount = parseFloat(amount || 0).toLocaleString("en-US", {
     style: "currency",
@@ -406,9 +429,6 @@ export async function notifyInvoiceOverdue(customerName, amount, daysOverdue) {
 // JOB / SCHEDULE NOTIFICATIONS
 // ============================================================
 
-/**
- * Notify when a job is coming up (day before reminder)
- */
 export async function notifyJobUpcoming(customerName, jobDescription, scheduledDate, address = null) {
   const dateStr = new Date(scheduledDate).toLocaleDateString("en-US", {
     weekday: "long",
@@ -426,9 +446,6 @@ export async function notifyJobUpcoming(customerName, jobDescription, scheduledD
   });
 }
 
-/**
- * Notify when a job is completed
- */
 export async function notifyJobCompleted(customerName, jobDescription, amount = null) {
   const amountText = amount
     ? `\n💰 Invoice amount: ${parseFloat(amount).toLocaleString("en-US", { style: "currency", currency: "USD" })}`
@@ -443,9 +460,6 @@ export async function notifyJobCompleted(customerName, jobDescription, amount = 
   });
 }
 
-/**
- * Notify when a new job is scheduled
- */
 export async function notifyJobScheduled(customerName, jobDescription, scheduledDate) {
   const dateStr = new Date(scheduledDate).toLocaleDateString("en-US", {
     weekday: "short",
@@ -465,9 +479,6 @@ export async function notifyJobScheduled(customerName, jobDescription, scheduled
 // CUSTOMER NOTIFICATIONS
 // ============================================================
 
-/**
- * Notify when a new customer is added
- */
 export async function notifyNewCustomer(customerName, phone = null) {
   const phoneText = phone ? `\n📞 ${phone}` : "";
 
@@ -483,16 +494,10 @@ export async function notifyNewCustomer(customerName, phone = null) {
 // GENERAL / UTILITY
 // ============================================================
 
-/**
- * Send a custom notification - use for anything not covered above
- */
 export async function sendCustomNotification(title, message, priority = PRIORITY.NORMAL) {
   return sendPushoverNotification({ title, message, priority });
 }
 
-/**
- * Test notification - use to verify setup is working
- */
 export async function sendTestNotification() {
   return sendPushoverNotification({
     type: "test",
@@ -503,9 +508,6 @@ export async function sendTestNotification() {
   });
 }
 
-/**
- * Notify when a bid appointment is scheduled
- */
 export async function notifyBidAppointmentScheduled(customerName, date, time, address = null) {
   const addressText = address ? `\n📍 ${address}` : "";
   return sendPushoverNotification({

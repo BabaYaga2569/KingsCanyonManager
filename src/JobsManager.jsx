@@ -33,6 +33,7 @@ import {
   AccordionSummary,
   AccordionDetails,
   Badge,
+  InputAdornment,
 } from "@mui/material";
 import CameraAltIcon from "@mui/icons-material/CameraAlt";
 import CloseIcon from "@mui/icons-material/Close";
@@ -43,9 +44,10 @@ import FilterListIcon from "@mui/icons-material/FilterList";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import PersonIcon from "@mui/icons-material/Person";
 import DownloadIcon from "@mui/icons-material/Download";
-import { exportJobsToExcel, exportJobsToCSV } from './utils/kclExportUtils';
+import SearchIcon from "@mui/icons-material/Search";
+import { exportJobsToExcel, exportJobsToCSV } from "./utils/kclExportUtils";
 import Swal from "sweetalert2";
-import { markAsViewed } from './useNotificationCounts';
+import { markAsViewed } from "./useNotificationCounts";
 
 export default function JobsManager() {
   const [jobs, setJobs] = useState([]);
@@ -53,14 +55,15 @@ export default function JobsManager() {
   const [sortedJobs, setSortedJobs] = useState([]);
   const [sortOrder, setSortOrder] = useState("newest");
   const [jobTypeFilter, setJobTypeFilter] = useState("all");
+  const [searchTerm, setSearchTerm] = useState("");
   const [loading, setLoading] = useState(true);
-  const [expandedClients, setExpandedClients] = useState({}); // tracks which client groups are open
+  const [expandedClients, setExpandedClients] = useState({});
   const [cameraOpen, setCameraOpen] = useState(false);
   const [currentJob, setCurrentJob] = useState(null);
   const [photoType, setPhotoType] = useState("");
   const [capturedImage, setCapturedImage] = useState(null);
   const [uploading, setUploading] = useState(false);
-  
+
   const [editDialogOpen, setEditDialogOpen] = useState(false);
   const [editingJob, setEditingJob] = useState(null);
   const [editForm, setEditForm] = useState({
@@ -73,7 +76,7 @@ export default function JobsManager() {
     notes: "",
     assignedEmployees: [],
   });
-  
+
   const navigate = useNavigate();
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
@@ -84,28 +87,49 @@ export default function JobsManager() {
   useEffect(() => {
     fetchJobs();
   }, []);
-  
+
   useEffect(() => {
-    markAsViewed('jobs');
+    markAsViewed("jobs");
   }, []);
 
   useEffect(() => {
     let filtered = [...jobs];
-    
+
     if (jobTypeFilter !== "all") {
-      filtered = filtered.filter(job => job.jobType === jobTypeFilter);
+      filtered = filtered.filter((job) => job.jobType === jobTypeFilter);
     }
-    
+
+    const search = searchTerm.trim().toLowerCase();
+
+    if (search) {
+      filtered = filtered.filter((job) => {
+        const searchableText = [
+          job.clientName,
+          job.description,
+          job.notes,
+          job.jobType,
+          job.status,
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+
+        return searchableText.includes(search);
+      });
+    }
+
     const sorted = filtered.sort((a, b) => {
       switch (sortOrder) {
-        case "newest":
+        case "newest": {
           const dateA = a.createdAt?.toDate ? a.createdAt.toDate() : new Date(a.createdAt || a.startDate || 0);
           const dateB = b.createdAt?.toDate ? b.createdAt.toDate() : new Date(b.createdAt || b.startDate || 0);
           return dateB - dateA;
-        case "oldest":
+        }
+        case "oldest": {
           const dateA2 = a.createdAt?.toDate ? a.createdAt.toDate() : new Date(a.createdAt || a.startDate || 0);
           const dateB2 = b.createdAt?.toDate ? b.createdAt.toDate() : new Date(b.createdAt || b.startDate || 0);
           return dateA2 - dateB2;
+        }
         case "name-asc":
           return (a.clientName || "").localeCompare(b.clientName || "");
         case "name-desc":
@@ -126,8 +150,9 @@ export default function JobsManager() {
           return 0;
       }
     });
+
     setSortedJobs(sorted);
-  }, [jobs, sortOrder, jobTypeFilter]);
+  }, [jobs, sortOrder, jobTypeFilter, searchTerm]);
 
   const fetchJobs = async () => {
     try {
@@ -163,7 +188,6 @@ export default function JobsManager() {
     }
   };
 
-  // ✅ NEW: Handle job type change with auto-save
   const handleJobTypeChange = async (jobId, newJobType) => {
     try {
       await updateDoc(doc(db, "jobs", jobId), { jobType: newJobType });
@@ -172,15 +196,14 @@ export default function JobsManager() {
           job.id === jobId ? { ...job, jobType: newJobType } : job
         )
       );
-      
-      // Show success toast
+
       Swal.fire({
         toast: true,
-        position: 'top-end',
-        icon: 'success',
-        title: 'Job type updated!',
+        position: "top-end",
+        icon: "success",
+        title: "Job type updated!",
         showConfirmButton: false,
-        timer: 2000
+        timer: 2000,
       });
     } catch (error) {
       console.error("Error updating job type:", error);
@@ -214,7 +237,7 @@ export default function JobsManager() {
     setCurrentJob(job);
     const beforePhotos = job.beforePhotos || [];
     const afterPhotos = job.afterPhotos || [];
-    
+
     if (beforePhotos.length === 0 && afterPhotos.length === 0) {
       Swal.fire("No Photos", "This job has no photos yet.", "info");
       return;
@@ -222,10 +245,10 @@ export default function JobsManager() {
 
     const photoHTML = `
       <div style="max-height: 500px; overflow-y: auto; padding: 10px;">
-        ${beforePhotos.length > 0 ? '<h3 style="color: #1976d2;">Before Photos:</h3>' : ''}
+        ${beforePhotos.length > 0 ? '<h3 style="color: #1976d2;">Before Photos:</h3>' : ""}
         ${beforePhotos.map((url, i) => `
           <div style="margin: 15px 0;">
-            <p style="font-weight: bold;">Before Photo ${i+1} 
+            <p style="font-weight: bold;">Before Photo ${i + 1} 
               <button 
                 onclick="window.deletePhoto('${url}', 'before')"
                 style="background: #f44336; color: white; border: none; border-radius: 4px; padding: 4px 12px; margin-left: 10px; cursor: pointer; font-size: 12px;"
@@ -235,12 +258,12 @@ export default function JobsManager() {
                  style="width: 100%; max-width: 400px; border-radius: 8px; cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,0.1);"
                  onclick="window.open('${url}', '_blank')" />
           </div>
-        `).join('')}
+        `).join("")}
         
-        ${afterPhotos.length > 0 ? '<h3 style="color: #2e7d32; margin-top: 20px;">After Photos:</h3>' : ''}
+        ${afterPhotos.length > 0 ? '<h3 style="color: #2e7d32; margin-top: 20px;">After Photos:</h3>' : ""}
         ${afterPhotos.map((url, i) => `
           <div style="margin: 15px 0;">
-            <p style="font-weight: bold;">After Photo ${i+1}
+            <p style="font-weight: bold;">After Photo ${i + 1}
               <button 
                 onclick="window.deletePhoto('${url}', 'after')"
                 style="background: #f44336; color: white; border: none; border-radius: 4px; padding: 4px 12px; margin-left: 10px; cursor: pointer; font-size: 12px;"
@@ -250,7 +273,7 @@ export default function JobsManager() {
                  style="width: 100%; max-width: 400px; border-radius: 8px; cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,0.1);"
                  onclick="window.open('${url}', '_blank')" />
           </div>
-        `).join('')}
+        `).join("")}
       </div>
       <p style="margin-top: 20px; font-size: 14px; color: #666; text-align: center;">
         Tap photo to view full size | Red button to delete
@@ -261,7 +284,7 @@ export default function JobsManager() {
       Swal.close();
       await handleDeletePhoto(photoUrl, photoType);
       setTimeout(() => {
-        const updatedJob = jobs.find(j => j.id === job.id);
+        const updatedJob = jobs.find((j) => j.id === job.id);
         if (updatedJob) handleViewPhotos(updatedJob);
       }, 500);
     };
@@ -269,7 +292,7 @@ export default function JobsManager() {
     Swal.fire({
       title: `${job.clientName} - Photos`,
       html: photoHTML,
-      width: '90%',
+      width: "90%",
       showCloseButton: true,
       showConfirmButton: false,
     });
@@ -344,67 +367,67 @@ export default function JobsManager() {
   const startCamera = async () => {
     try {
       console.log("🎥 Starting camera...");
-      
+
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         throw new Error("Camera not supported on this device");
       }
-      
+
       const constraints = {
         video: {
           facingMode: "environment",
           width: { ideal: 1280 },
-          height: { ideal: 720 }
-        }
+          height: { ideal: 720 },
+        },
       };
-      
+
       console.log("📱 Requesting camera access...");
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
       console.log("✅ Camera stream obtained");
-      
+
       streamRef.current = stream;
-      
+
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        videoRef.current.setAttribute('playsinline', 'true');
-        videoRef.current.setAttribute('autoplay', 'true');
+        videoRef.current.setAttribute("playsinline", "true");
+        videoRef.current.setAttribute("autoplay", "true");
         videoRef.current.muted = true;
-        
+
         try {
           await videoRef.current.play();
           console.log("✅ Video playing");
         } catch (playError) {
           console.log("⚠️ Auto-play failed, trying manual play");
-          videoRef.current.play().catch(e => console.error("Play error:", e));
+          videoRef.current.play().catch((e) => console.error("Play error:", e));
         }
       }
     } catch (error) {
       console.error("❌ Camera error:", error.name, error.message);
-      
+
       try {
         console.log("🔄 Trying fallback camera...");
         const stream = await navigator.mediaDevices.getUserMedia({ video: true });
         streamRef.current = stream;
-        
+
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
-          videoRef.current.setAttribute('playsinline', 'true');
-          videoRef.current.setAttribute('autoplay', 'true');
+          videoRef.current.setAttribute("playsinline", "true");
+          videoRef.current.setAttribute("autoplay", "true");
           videoRef.current.muted = true;
           await videoRef.current.play();
           console.log("✅ Fallback camera working");
         }
       } catch (fallbackError) {
         console.error("❌ Fallback camera error:", fallbackError);
-        
+
         let errorMessage = "Could not access camera. ";
-        if (fallbackError.name === 'NotAllowedError' || fallbackError.name === 'PermissionDeniedError') {
+        if (fallbackError.name === "NotAllowedError" || fallbackError.name === "PermissionDeniedError") {
           errorMessage += "Please allow camera permissions in your browser settings.";
-        } else if (fallbackError.name === 'NotFoundError') {
+        } else if (fallbackError.name === "NotFoundError") {
           errorMessage += "No camera found on this device.";
         } else {
           errorMessage += "Please check your device settings.";
         }
-        
+
         Swal.fire("Camera Error", errorMessage, "error");
         handleCloseCamera();
       }
@@ -478,26 +501,26 @@ export default function JobsManager() {
       handleCloseCamera();
     } catch (error) {
       console.error("Upload error:", error);
-      
-      let errorDetails = `Error: ${error.message || 'Unknown error'}\n\n`;
-      
+
+      let errorDetails = `Error: ${error.message || "Unknown error"}\n\n`;
+
       if (error.code) {
         errorDetails += `Code: ${error.code}\n\n`;
       }
-      
-      if (error.code === 'storage/unauthorized') {
+
+      if (error.code === "storage/unauthorized") {
         errorDetails += "This means Firebase Storage permissions are blocking the upload.\n\nFix: Go to Firebase Console → Storage → Rules";
-      } else if (error.code === 'storage/canceled') {
+      } else if (error.code === "storage/canceled") {
         errorDetails += "Upload was cancelled.";
       } else if (error.name) {
         errorDetails += `Type: ${error.name}`;
       }
-      
+
       Swal.fire({
         title: "Upload Failed",
         text: errorDetails,
         icon: "error",
-        confirmButtonText: "OK"
+        confirmButtonText: "OK",
       });
     } finally {
       setUploading(false);
@@ -506,13 +529,13 @@ export default function JobsManager() {
 
   const handleDeletePhoto = async (photoUrl, photoType) => {
     const result = await Swal.fire({
-      title: 'Delete Photo?',
-      text: 'This cannot be undone.',
-      icon: 'warning',
+      title: "Delete Photo?",
+      text: "This cannot be undone.",
+      icon: "warning",
       showCancelButton: true,
-      confirmButtonColor: '#d33',
-      confirmButtonText: 'Delete',
-      cancelButtonText: 'Cancel'
+      confirmButtonColor: "#d33",
+      confirmButtonText: "Delete",
+      cancelButtonText: "Cancel",
     });
 
     if (!result.isConfirmed) return;
@@ -520,7 +543,7 @@ export default function JobsManager() {
     try {
       const field = photoType === "before" ? "beforePhotos" : "afterPhotos";
       const currentPhotos = currentJob[field] || [];
-      const updatedPhotos = currentPhotos.filter(url => url !== photoUrl);
+      const updatedPhotos = currentPhotos.filter((url) => url !== photoUrl);
 
       await updateDoc(doc(db, "jobs", currentJob.id), {
         [field]: updatedPhotos,
@@ -565,11 +588,26 @@ export default function JobsManager() {
   return (
     <Box sx={{ p: { xs: 2, sm: 3 } }}>
       <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mb: 3, flexWrap: "wrap", gap: 2 }}>
-        <Typography variant="h6" sx={{ fontSize: { xs: '1.5rem', sm: '2rem' } }}>
+        <Typography variant="h6" sx={{ fontSize: { xs: "1.5rem", sm: "2rem" } }}>
           Jobs ({sortedJobs.length})
         </Typography>
 
         <Box sx={{ display: "flex", gap: 2, flexWrap: "wrap" }}>
+          <TextField
+            size="small"
+            placeholder="Search client, description, type, status..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            sx={{ minWidth: { xs: "100%", sm: 300 } }}
+            InputProps={{
+              startAdornment: (
+                <InputAdornment position="start">
+                  <SearchIcon />
+                </InputAdornment>
+              ),
+            }}
+          />
+
           <FormControl size="small" sx={{ minWidth: 180 }}>
             <InputLabel id="filter-label">
               <FilterListIcon sx={{ fontSize: 18, mr: 0.5, verticalAlign: "middle" }} />
@@ -608,6 +646,7 @@ export default function JobsManager() {
               <MenuItem value="status-pending">Pending First</MenuItem>
             </Select>
           </FormControl>
+
           <Button
             variant="outlined"
             size="small"
@@ -616,6 +655,7 @@ export default function JobsManager() {
           >
             Excel
           </Button>
+
           <Button
             variant="outlined"
             size="small"
@@ -627,18 +667,18 @@ export default function JobsManager() {
         </Box>
       </Box>
 
-      {/* ============ GROUPED BY CLIENT ============ */}
       {sortedJobs.length === 0 ? (
-        <Box sx={{ textAlign: 'center', py: 8 }}>
+        <Box sx={{ textAlign: "center", py: 8 }}>
           <Typography variant="h6" color="text.secondary">No Jobs Found</Typography>
           <Typography variant="body2" color="text.secondary">
-            {jobTypeFilter !== "all"
-              ? `No ${jobTypeFilter} jobs found. Try changing the filter.`
-              : "Jobs will appear here after you create them"}
+            {searchTerm
+              ? "No jobs match your search."
+              : jobTypeFilter !== "all"
+                ? `No ${jobTypeFilter} jobs found. Try changing the filter.`
+                : "Jobs will appear here after you create them"}
           </Typography>
         </Box>
       ) : (() => {
-        // Group jobs by clientName, sorted by client name A-Z
         const groups = sortedJobs.reduce((acc, job) => {
           const key = job.clientName || "Unknown Client";
           if (!acc[key]) acc[key] = [];
@@ -649,29 +689,29 @@ export default function JobsManager() {
         return Object.entries(groups)
           .sort(([a], [b]) => a.localeCompare(b))
           .map(([clientName, clientJobs]) => {
-            const isExpanded = expandedClients[clientName] !== false; // default open
+            const isExpanded = expandedClients[clientName] !== false;
             const hasMultiple = clientJobs.length > 1;
-            const activeCount = clientJobs.filter(j => j.status === "Active").length;
-            const pendingCount = clientJobs.filter(j => j.status === "Pending").length;
+            const activeCount = clientJobs.filter((j) => j.status === "Active").length;
+            const pendingCount = clientJobs.filter((j) => j.status === "Pending").length;
 
             return (
               <Accordion
                 key={clientName}
                 expanded={isExpanded}
-                onChange={() => setExpandedClients(prev => ({ ...prev, [clientName]: !isExpanded }))}
-                sx={{ mb: 1.5, boxShadow: 2, borderRadius: '8px !important', '&:before': { display: 'none' } }}
+                onChange={() => setExpandedClients((prev) => ({ ...prev, [clientName]: !isExpanded }))}
+                sx={{ mb: 1.5, boxShadow: 2, borderRadius: "8px !important", "&:before": { display: "none" } }}
               >
                 <AccordionSummary
                   expandIcon={<ExpandMoreIcon />}
-                  sx={{ backgroundColor: '#f5f5f5', borderRadius: '8px', minHeight: 56 }}
+                  sx={{ backgroundColor: "#f5f5f5", borderRadius: "8px", minHeight: 56 }}
                 >
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, width: '100%', pr: 1 }}>
+                  <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, width: "100%", pr: 1 }}>
                     <PersonIcon color="primary" />
-                    <Typography variant="h6" sx={{ fontSize: '1rem', fontWeight: 700, flex: 1 }}>
+                    <Typography variant="h6" sx={{ fontSize: "1rem", fontWeight: 700, flex: 1 }}>
                       {clientName}
                     </Typography>
                     <Badge badgeContent={clientJobs.length} color="primary" sx={{ mr: 1 }}>
-                      <Chip label={`${clientJobs.length} job${clientJobs.length > 1 ? 's' : ''}`} size="small" />
+                      <Chip label={`${clientJobs.length} job${clientJobs.length > 1 ? "s" : ""}`} size="small" />
                     </Badge>
                     {activeCount > 0 && <Chip label={`${activeCount} Active`} size="small" color="success" />}
                     {pendingCount > 0 && <Chip label={`${pendingCount} Pending`} size="small" color="warning" />}
@@ -679,13 +719,14 @@ export default function JobsManager() {
                 </AccordionSummary>
 
                 <AccordionDetails sx={{ p: 2 }}>
-                  <Box sx={{
-                    display: "grid",
-                    gridTemplateColumns: { xs: "1fr", sm: "repeat(auto-fit, minmax(300px, 1fr))" },
-                    gap: 2,
-                  }}>
+                  <Box
+                    sx={{
+                      display: "grid",
+                      gridTemplateColumns: { xs: "1fr", sm: "repeat(auto-fit, minmax(300px, 1fr))" },
+                      gap: 2,
+                    }}
+                  >
                     {clientJobs.map((job, jobIndex) => {
-                      // Job number label — only show # if client has multiple jobs
                       const jobLabel = hasMultiple
                         ? `Job #${jobIndex + 1} — ${(() => {
                             const raw = job.serviceDate || job.startDate || job.createdAt;
@@ -693,14 +734,16 @@ export default function JobsManager() {
                             try {
                               const d = raw?.toDate ? raw.toDate() : new Date(raw);
                               return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-                            } catch { return "No date"; }
+                            } catch {
+                              return "No date";
+                            }
                           })()}`
                         : null;
 
                       return (
-                        <Card key={job.id} sx={{ boxShadow: 1, border: hasMultiple ? '1px solid #e0e0e0' : 'none' }}>
+                        <Card key={job.id} sx={{ boxShadow: 1, border: hasMultiple ? "1px solid #e0e0e0" : "none" }}>
                           <CardContent>
-                            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', mb: 1.5 }}>
+                            <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "start", mb: 1.5 }}>
                               <Box>
                                 {jobLabel && (
                                   <Typography variant="caption" color="primary" fontWeight="bold" display="block">
@@ -714,44 +757,45 @@ export default function JobsManager() {
                               <Chip label={job.status || "Pending"} color={getStatusColor(job.status)} size="small" />
                             </Box>
 
-                            {/* Job Description — what the job actually is */}
                             {(job.description || job.notes) ? (
-                              <Box sx={{ mb: 2, p: 1.5, bgcolor: '#f0f4ff', borderRadius: 1, borderLeft: '3px solid #1976d2' }}>
+                              <Box sx={{ mb: 2, p: 1.5, bgcolor: "#f0f4ff", borderRadius: 1, borderLeft: "3px solid #1976d2" }}>
                                 <Typography variant="caption" color="primary" fontWeight="bold" display="block" gutterBottom>
                                   Job Description
                                 </Typography>
-                                <Typography variant="body2" color="text.primary" sx={{
-                                  display: '-webkit-box',
-                                  WebkitLineClamp: 3,
-                                  WebkitBoxOrient: 'vertical',
-                                  overflow: 'hidden',
-                                  whiteSpace: 'pre-wrap',
-                                }}>
+                                <Typography
+                                  variant="body2"
+                                  color="text.primary"
+                                  sx={{
+                                    display: "-webkit-box",
+                                    WebkitLineClamp: 3,
+                                    WebkitBoxOrient: "vertical",
+                                    overflow: "hidden",
+                                    whiteSpace: "pre-wrap",
+                                  }}
+                                >
                                   {job.description || job.notes}
                                 </Typography>
-                                {(job.description || job.notes || '').length > 150 && (
+                                {(job.description || job.notes || "").length > 150 && (
                                   <Typography variant="caption" color="text.secondary">
                                     (tap Edit Job to see full description)
                                   </Typography>
                                 )}
                               </Box>
                             ) : (
-                              <Box sx={{ mb: 2, p: 1, bgcolor: '#fff8e1', borderRadius: 1, borderLeft: '3px solid #ff9800' }}>
+                              <Box sx={{ mb: 2, p: 1, bgcolor: "#fff8e1", borderRadius: 1, borderLeft: "3px solid #ff9800" }}>
                                 <Typography variant="caption" color="warning.dark">
                                   ⚠️ No description — add one via Edit Job
                                 </Typography>
                               </Box>
                             )}
 
-                            {/* Job Type Dropdown (original) */}
-                            {/* ── Profit Badge ── */}
                             {(() => {
                               const revenue = parseFloat(job.amount || 0);
                               const materials = parseFloat(job.totalExpenses || 0);
                               const hasRevenue = revenue > 0;
                               if (!hasRevenue) {
                                 return (
-                                  <Box sx={{ mb: 2, p: 1, bgcolor: '#f5f5f5', borderRadius: 1, display: 'flex', alignItems: 'center', gap: 1 }}>
+                                  <Box sx={{ mb: 2, p: 1, bgcolor: "#f5f5f5", borderRadius: 1, display: "flex", alignItems: "center", gap: 1 }}>
                                     <Typography variant="caption" color="text.secondary">
                                       💰 No invoice — profitability unknown
                                     </Typography>
@@ -762,11 +806,11 @@ export default function JobsManager() {
                               const margin = (profit / revenue) * 100;
                               const isLoss = margin < 0;
                               const isThin = margin >= 0 && margin < 20;
-                              const bgcolor = isLoss ? '#ffebee' : isThin ? '#fffde7' : '#e8f5e9';
-                              const borderColor = isLoss ? '#f44336' : isThin ? '#ff9800' : '#4caf50';
-                              const emoji = isLoss ? '🔴' : isThin ? '🟡' : '🟢';
+                              const bgcolor = isLoss ? "#ffebee" : isThin ? "#fffde7" : "#e8f5e9";
+                              const borderColor = isLoss ? "#f44336" : isThin ? "#ff9800" : "#4caf50";
+                              const emoji = isLoss ? "🔴" : isThin ? "🟡" : "🟢";
                               return (
-                                <Box sx={{ mb: 2, p: 1, bgcolor, borderRadius: 1, borderLeft: `3px solid ${borderColor}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <Box sx={{ mb: 2, p: 1, bgcolor, borderRadius: 1, borderLeft: `3px solid ${borderColor}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                                   <Typography variant="caption" fontWeight="bold">
                                     {emoji} Margin: {margin.toFixed(0)}%
                                   </Typography>
@@ -806,21 +850,31 @@ export default function JobsManager() {
                               </Select>
                             </FormControl>
 
-                            <Box sx={{ display: 'flex', gap: 1, mb: 1, flexWrap: 'wrap' }}>
+                            <Box sx={{ display: "flex", gap: 1, mb: 1, flexWrap: "wrap" }}>
                               <Chip icon={<PhotoLibraryIcon />} label={`Before: ${(job.beforePhotos || []).length}`} size="small" color="primary" variant="outlined" />
                               <Chip icon={<PhotoLibraryIcon />} label={`After: ${(job.afterPhotos || []).length}`} size="small" color="success" variant="outlined" />
                             </Box>
                           </CardContent>
 
-                          <CardActions sx={{ p: 2, pt: 0, flexDirection: 'column', gap: 1 }}>
-                            <Button variant="contained" color="primary" startIcon={<EditIcon />} onClick={() => handleOpenEditDialog(job)} fullWidth size="small">Edit Job</Button>
-                            <Button variant="outlined" startIcon={<CameraAltIcon />} onClick={() => handleOpenCamera("before", job)} fullWidth size="small">Take Before Photo</Button>
-                            <Button variant="outlined" color="success" startIcon={<CameraAltIcon />} onClick={() => handleOpenCamera("after", job)} fullWidth size="small">Take After Photo</Button>
+                          <CardActions sx={{ p: 2, pt: 0, flexDirection: "column", gap: 1 }}>
+                            <Button variant="contained" color="primary" startIcon={<EditIcon />} onClick={() => handleOpenEditDialog(job)} fullWidth size="small">
+                              Edit Job
+                            </Button>
+                            <Button variant="outlined" startIcon={<CameraAltIcon />} onClick={() => handleOpenCamera("before", job)} fullWidth size="small">
+                              Take Before Photo
+                            </Button>
+                            <Button variant="outlined" color="success" startIcon={<CameraAltIcon />} onClick={() => handleOpenCamera("after", job)} fullWidth size="small">
+                              Take After Photo
+                            </Button>
                             <Button variant="contained" color="info" onClick={() => handleViewPhotos(job)} fullWidth size="small">
                               View All Photos ({(job.beforePhotos || []).length + (job.afterPhotos || []).length})
                             </Button>
-                            <Button variant="contained" color="primary" onClick={() => navigate(`/job-expenses/${job.id}`)} fullWidth size="small">View Expenses & Profit</Button>
-                            <Button variant="outlined" color="error" onClick={() => handleDeleteJob(job.id, job.clientName)} fullWidth size="small">Delete Job</Button>
+                            <Button variant="contained" color="primary" onClick={() => navigate(`/job-expenses/${job.id}`)} fullWidth size="small">
+                              View Expenses & Profit
+                            </Button>
+                            <Button variant="outlined" color="error" onClick={() => handleDeleteJob(job.id, job.clientName)} fullWidth size="small">
+                              Delete Job
+                            </Button>
                           </CardActions>
                         </Card>
                       );
@@ -832,17 +886,14 @@ export default function JobsManager() {
           });
       })()}
 
-
-
-      {/* Camera Dialog */}
-      <Dialog 
-        open={cameraOpen} 
+      <Dialog
+        open={cameraOpen}
         onClose={handleCloseCamera}
         maxWidth="sm"
         fullWidth
         fullScreen={window.innerWidth < 600}
       >
-        <DialogTitle sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <DialogTitle sx={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <Typography variant="h6">
             {photoType.charAt(0).toUpperCase() + photoType.slice(1)} Photo
           </Typography>
@@ -850,47 +901,47 @@ export default function JobsManager() {
             <CloseIcon />
           </IconButton>
         </DialogTitle>
-        
+
         <DialogContent>
           {!capturedImage ? (
-            <Box sx={{ textAlign: 'center' }}>
-              <Box sx={{ display: { xs: 'none', sm: 'block' } }}>
+            <Box sx={{ textAlign: "center" }}>
+              <Box sx={{ display: { xs: "none", sm: "block" } }}>
                 <video
                   ref={videoRef}
                   autoPlay
                   playsInline
                   muted
                   style={{
-                    width: '100%',
-                    maxHeight: '400px',
-                    borderRadius: '8px',
-                    backgroundColor: '#000',
+                    width: "100%",
+                    maxHeight: "400px",
+                    borderRadius: "8px",
+                    backgroundColor: "#000",
                   }}
                 />
-                <canvas ref={canvasRef} style={{ display: 'none' }} />
+                <canvas ref={canvasRef} style={{ display: "none" }} />
               </Box>
-              
-              <Box sx={{ mt: 2, display: 'flex', flexDirection: 'column', gap: 2 }}>
+
+              <Box sx={{ mt: 2, display: "flex", flexDirection: "column", gap: 2 }}>
                 <Button
                   variant="contained"
                   onClick={handleCapturePhoto}
                   fullWidth
                   size="large"
-                  sx={{ display: { xs: 'none', sm: 'flex' } }}
+                  sx={{ display: { xs: "none", sm: "flex" } }}
                 >
                   Capture Photo
                 </Button>
-                
+
                 <Button
                   variant="contained"
                   onClick={() => fileInputRef.current?.click()}
                   fullWidth
                   size="large"
-                  sx={{ display: { xs: 'flex', sm: 'none' } }}
+                  sx={{ display: { xs: "flex", sm: "none" } }}
                 >
                   Open Camera
                 </Button>
-                
+
                 <Button
                   variant="outlined"
                   onClick={() => galleryInputRef.current?.click()}
@@ -898,34 +949,34 @@ export default function JobsManager() {
                 >
                   Choose from Gallery
                 </Button>
-                
+
                 <input
                   ref={fileInputRef}
                   type="file"
                   accept="image/*"
                   capture="environment"
                   onChange={handleFileUpload}
-                  style={{ display: 'none' }}
+                  style={{ display: "none" }}
                 />
                 <input
                   ref={galleryInputRef}
                   type="file"
                   accept="image/*"
                   onChange={handleFileUpload}
-                  style={{ display: 'none' }}
+                  style={{ display: "none" }}
                 />
               </Box>
             </Box>
           ) : (
-            <Box sx={{ textAlign: 'center' }}>
+            <Box sx={{ textAlign: "center" }}>
               <img
                 src={capturedImage}
                 alt="Captured"
                 style={{
-                  width: '100%',
-                  maxHeight: '400px',
-                  borderRadius: '8px',
-                  objectFit: 'contain',
+                  width: "100%",
+                  maxHeight: "400px",
+                  borderRadius: "8px",
+                  objectFit: "contain",
                 }}
               />
             </Box>
@@ -935,7 +986,7 @@ export default function JobsManager() {
         <DialogActions sx={{ p: 2, gap: 1 }}>
           {capturedImage ? (
             <>
-              <Button 
+              <Button
                 onClick={() => setCapturedImage(null)}
                 variant="outlined"
               >
@@ -958,7 +1009,6 @@ export default function JobsManager() {
         </DialogActions>
       </Dialog>
 
-      {/* Edit Job Dialog */}
       <Dialog
         open={editDialogOpen}
         onClose={handleCloseEditDialog}
@@ -967,14 +1017,14 @@ export default function JobsManager() {
       >
         <DialogTitle>Edit Job</DialogTitle>
         <DialogContent>
-          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, mt: 2 }}>
+          <Box sx={{ display: "flex", flexDirection: "column", gap: 2, mt: 2 }}>
             <TextField
               label="Client Name *"
               value={editForm.clientName}
               onChange={(e) => setEditForm({ ...editForm, clientName: e.target.value })}
               fullWidth
             />
-            
+
             <TextField
               label="Description"
               multiline
@@ -983,7 +1033,7 @@ export default function JobsManager() {
               onChange={(e) => setEditForm({ ...editForm, description: e.target.value })}
               fullWidth
             />
-            
+
             <TextField
               label="Amount ($)"
               type="number"
@@ -992,7 +1042,7 @@ export default function JobsManager() {
               fullWidth
               inputProps={{ min: 0, step: "0.01" }}
             />
-            
+
             <FormControl fullWidth>
               <InputLabel>Status</InputLabel>
               <Select
@@ -1006,7 +1056,7 @@ export default function JobsManager() {
                 <MenuItem value="Cancelled">Cancelled</MenuItem>
               </Select>
             </FormControl>
-            
+
             <TextField
               label="Start Date"
               type="date"
@@ -1015,7 +1065,7 @@ export default function JobsManager() {
               fullWidth
               InputLabelProps={{ shrink: true }}
             />
-            
+
             <TextField
               label="Completion Date"
               type="date"
@@ -1024,7 +1074,7 @@ export default function JobsManager() {
               fullWidth
               InputLabelProps={{ shrink: true }}
             />
-            
+
             <TextField
               label="Notes"
               multiline

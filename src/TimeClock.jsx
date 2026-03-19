@@ -21,7 +21,17 @@ import RestaurantIcon from "@mui/icons-material/Restaurant";
 import PlayArrowIcon from "@mui/icons-material/PlayArrow";
 import moment from "moment";
 import Swal from "sweetalert2";
-import { notifyCrewClockIn, notifyCrewClockOut, notifyLunchStart, notifyLunchEnd, notifyFailedClockIn, notifyFailedClockOut } from './pushoverNotificationService';
+import {
+  notifyCrewClockIn,
+  notifyCrewClockOut,
+  notifyLunchStart,
+  notifyLunchEnd,
+  notifyFailedClockIn,
+  notifyFailedClockOut,
+  notifyClockInGpsDenied,
+  notifyClockInNoAddress,
+  notifyClockInNoCoordinates,
+} from "./pushoverNotificationService";
 
 export default function TimeClock() {
   const { user, userRole } = useAuth();
@@ -33,11 +43,10 @@ export default function TimeClock() {
   const [elapsedTime, setElapsedTime] = useState(0);
   const [todayHours, setTodayHours] = useState(0);
   const [employeeInfo, setEmployeeInfo] = useState(null);
-  
-  // 🍔 NEW: Lunch break state
+
   const [onLunch, setOnLunch] = useState(false);
   const [lunchStartTime, setLunchStartTime] = useState(null);
-  const [totalLunchTime, setTotalLunchTime] = useState(0); // in seconds
+  const [totalLunchTime, setTotalLunchTime] = useState(0);
 
   useEffect(() => {
     loadData();
@@ -46,21 +55,18 @@ export default function TimeClock() {
   useEffect(() => {
     let interval;
     if (clockedIn && currentEntry && !onLunch) {
-      // Update elapsed time (excluding lunch)
       interval = setInterval(() => {
         const start = moment(currentEntry.clockIn);
         const now = moment();
-        const totalSeconds = now.diff(start, 'seconds');
+        const totalSeconds = now.diff(start, "seconds");
         setElapsedTime(totalSeconds - totalLunchTime);
       }, 1000);
     } else if (onLunch && lunchStartTime) {
-      // Update lunch timer
       interval = setInterval(() => {
         const lunchStart = moment(lunchStartTime);
         const now = moment();
-        const currentLunchSeconds = now.diff(lunchStart, 'seconds');
-        // Update total lunch time (including current lunch session)
-        setTotalLunchTime(currentEntry.lunchMinutes * 60 + currentLunchSeconds);
+        const currentLunchSeconds = now.diff(lunchStart, "seconds");
+        setTotalLunchTime((currentEntry?.lunchMinutes || 0) * 60 + currentLunchSeconds);
       }, 1000);
     }
     return () => clearInterval(interval);
@@ -68,11 +74,10 @@ export default function TimeClock() {
 
   const loadEmployeeInfo = async () => {
     try {
-      const usersSnap = await getDocs(collection(db, 'users'));
-      const users = usersSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-      
-      const employee = users.find(u => u.email === user.email);
-      
+      const usersSnap = await getDocs(collection(db, "users"));
+      const users = usersSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      const employee = users.find((u) => u.email === user.email);
+
       if (employee) {
         console.log("✅ Found employee:", employee.name);
         setEmployeeInfo(employee);
@@ -95,20 +100,20 @@ export default function TimeClock() {
   const loadData = async () => {
     try {
       await loadEmployeeInfo();
-      
+
       const jobsSnap = await getDocs(collection(db, "jobs"));
       const jobsData = jobsSnap.docs.map((d) => {
         const data = d.data();
         const clientName = data.clientName || data.customerName || "Unknown Client";
-        
-        return { 
-          id: d.id, 
+
+        return {
+          id: d.id,
           ...data,
-          clientName: clientName,
-          displayName: clientName
+          clientName,
+          displayName: clientName,
         };
       });
-      
+
       setJobs(jobsData);
       await checkExistingEntry();
       await loadTodayHours();
@@ -128,16 +133,15 @@ export default function TimeClock() {
         where("clockOut", "==", null),
         orderBy("clockIn", "desc")
       );
-      
+
       const snap = await getDocs(q);
-      
+
       if (!snap.empty) {
         const entry = { id: snap.docs[0].id, ...snap.docs[0].data() };
         setCurrentEntry(entry);
         setClockedIn(true);
         setSelectedJob(entry.jobId);
-        
-        // 🍔 NEW: Restore lunch state if exists
+
         if (entry.lunchStartTime && !entry.lunchEndTime) {
           setOnLunch(true);
           setLunchStartTime(entry.lunchStartTime);
@@ -145,10 +149,10 @@ export default function TimeClock() {
         if (entry.lunchMinutes) {
           setTotalLunchTime(entry.lunchMinutes * 60);
         }
-        
+
         const start = moment(entry.clockIn);
         const now = moment();
-        const totalSeconds = now.diff(start, 'seconds');
+        const totalSeconds = now.diff(start, "seconds");
         const lunchSeconds = entry.lunchMinutes ? entry.lunchMinutes * 60 : 0;
         setElapsedTime(totalSeconds - lunchSeconds);
       }
@@ -159,9 +163,9 @@ export default function TimeClock() {
 
   const loadTodayHours = async () => {
     try {
-      const todayStart = moment().startOf('day').toISOString();
-      const todayEnd = moment().endOf('day').toISOString();
-      
+      const todayStart = moment().startOf("day").toISOString();
+      const todayEnd = moment().endOf("day").toISOString();
+
       const timeEntriesRef = collection(db, "job_time_entries");
       const q = query(
         timeEntriesRef,
@@ -169,40 +173,41 @@ export default function TimeClock() {
         where("clockIn", ">=", todayStart),
         where("clockIn", "<=", todayEnd)
       );
-      
+
       const entriesSnap = await getDocs(q);
       let total = 0;
-      
-      entriesSnap.docs.forEach((doc) => {
-        const entry = doc.data();
+
+      entriesSnap.docs.forEach((docSnap) => {
+        const entry = docSnap.data();
         if (entry.hoursWorked) {
           total += parseFloat(entry.hoursWorked);
         }
       });
-      
+
       setTodayHours(total);
     } catch (error) {
       console.error("Error loading today's hours:", error);
     }
   };
 
-  // 📍 GPS geofence check — looks up customer address from job's customerId
   const runGpsCheck = async (job) => {
-    // Skip GPS if employee has requireGps turned off (office/admin hourly staff)
     if (employeeInfo?.requireGps === false) {
       console.log("📍 GPS check skipped — requireGps disabled for this employee");
-      return { passed: true, gpsData: {} };
+      return {
+        passed: true,
+        gpsData: {
+          gpsSkipped: true,
+          gpsSkipReason: "employee_exempt",
+          jobAddress: null,
+        },
+      };
     }
 
-    // Skip GPS for weed service jobs
     const jobType = (job?.jobType || "").toLowerCase();
-    const jobName = (job?.displayName || job?.clientName || "").toLowerCase();
-    if (jobType.includes("weed") || jobName.includes("weed-service") || jobName.includes("weed service")) {
-      console.log("📍 GPS check skipped for weed service job");
-      return { passed: true, gpsData: {} };
-    }
+    const weedJobName = (job?.displayName || job?.clientName || "").toLowerCase();
+    const employeeName = employeeInfo?.name || user.displayName || user.email;
+    const selectedJobName = job?.displayName || job?.clientName || "Unknown Job";
 
-    // Step 1: Resolve job site address + stored coords via customer lookup
     let jobAddress = null;
     let customerDocData = null;
     const customerId = job?.customerId;
@@ -213,7 +218,6 @@ export default function TimeClock() {
         if (customerSnap.exists()) {
           customerDocData = customerSnap.data();
           const c = customerDocData;
-          // Build full address from components for best geocoding accuracy
           const parts = [c.address, c.city, c.state, c.zip].filter(Boolean);
           if (parts.length > 0) {
             jobAddress = parts.join(", ");
@@ -229,7 +233,29 @@ export default function TimeClock() {
       console.warn("📍 Job has no customerId — cannot resolve address");
     }
 
+    if (
+      jobType.includes("weed") ||
+      weedJobName.includes("weed-service") ||
+      weedJobName.includes("weed service")
+    ) {
+      console.log("📍 GPS check skipped for weed service job");
+      return {
+        passed: true,
+        gpsData: {
+          gpsSkipped: true,
+          gpsSkipReason: "weed_service",
+          jobAddress,
+        },
+      };
+    }
+
     if (!jobAddress) {
+      try {
+        await notifyClockInNoAddress(employeeName, selectedJobName, customerId);
+      } catch (e) {
+        console.error("📍 Failed to send no-address notification:", e);
+      }
+
       await Swal.fire({
         icon: "error",
         title: "No Address Found",
@@ -239,7 +265,6 @@ export default function TimeClock() {
       return { passed: false, gpsData: {} };
     }
 
-    // Step 2: Get crew GPS position
     let position;
     try {
       position = await new Promise((resolve, reject) =>
@@ -252,9 +277,17 @@ export default function TimeClock() {
     } catch (e) {
       console.error("📍 Geolocation error:", e);
 
-      const denied =
-        e?.code === 1 ||
-        e?.code === e?.PERMISSION_DENIED;
+      const denied = e?.code === 1 || e?.code === e?.PERMISSION_DENIED;
+
+      try {
+        await notifyClockInGpsDenied(
+          employeeName,
+          selectedJobName,
+          denied ? "GPS permission denied" : "GPS/location unavailable"
+        );
+      } catch (notifyError) {
+        console.error("📍 Failed to send GPS denied notification:", notifyError);
+      }
 
       await Swal.fire({
         icon: "error",
@@ -271,12 +304,18 @@ export default function TimeClock() {
     const { latitude, longitude, accuracy } = position.coords;
     console.log(`📍 Crew position: ${latitude}, ${longitude} (±${Math.round(accuracy)}ft)`);
 
-    // Step 3: Use stored coordinates from customer doc (geocoded when address was saved)
     const jobLat = customerDocData?.geoLat || null;
     const jobLng = customerDocData?.geoLng || null;
 
     if (!jobLat || !jobLng) {
       console.warn("📍 No verified coordinates for this customer — address was not geocoded on save");
+
+      try {
+        await notifyClockInNoCoordinates(employeeName, selectedJobName, jobAddress);
+      } catch (notifyError) {
+        console.error("📍 Failed to send no-coordinates notification:", notifyError);
+      }
+
       await Swal.fire({
         icon: "error",
         title: "Address Not Verified",
@@ -288,8 +327,7 @@ export default function TimeClock() {
 
     console.log(`📍 Job site (stored coords): ${jobLat}, ${jobLng}`);
 
-    // Step 4: Haversine distance in feet
-    const R = 20902231; // Earth radius in feet
+    const R = 20902231;
     const dLat = ((jobLat - latitude) * Math.PI) / 180;
     const dLng = ((jobLng - longitude) * Math.PI) / 180;
     const a =
@@ -309,12 +347,10 @@ export default function TimeClock() {
       gpsDistanceFeet: distanceFeet,
       gpsDistanceMiles: parseFloat(distanceMiles),
       jobAddress,
-      // Store job site coords so clock-out can calculate distance without re-geocoding
       gpsJobLat: jobLat,
       gpsJobLng: jobLng,
     };
 
-    // Step 5: Enforce 500 ft geofence
     if (distanceFeet > 500) {
       await Swal.fire({
         icon: "error",
@@ -325,11 +361,14 @@ export default function TimeClock() {
         confirmButtonText: "OK",
       });
 
-      // 🚨 Alert admin about the failed attempt
       try {
-        const failedName = employeeInfo?.name || "Unknown Employee";
-        const jobName = job?.displayName || job?.clientName || "Unknown Job";
-        await notifyFailedClockIn(failedName, jobName, distanceFeet, parseFloat(distanceMiles), jobAddress);
+        await notifyFailedClockIn(
+          employeeName,
+          selectedJobName,
+          distanceFeet,
+          parseFloat(distanceMiles),
+          jobAddress
+        );
       } catch (e) {
         console.error("📍 Failed to send blocked clock-in notification:", e);
       }
@@ -347,9 +386,8 @@ export default function TimeClock() {
     }
 
     try {
-      const job = jobs.find(j => j.id === selectedJob);
+      const job = jobs.find((j) => j.id === selectedJob);
 
-      // 📍 GPS geofence check before clocking in
       const { passed, gpsData } = await runGpsCheck(job);
       if (!passed) return;
 
@@ -366,20 +404,18 @@ export default function TimeClock() {
         clockIn: now,
         clockOut: null,
         hoursWorked: null,
-        // 🍔 Lunch tracking fields
         lunchStartTime: null,
         lunchEndTime: null,
         lunchMinutes: 0,
         status: "pending",
         createdAt: now,
-        // 📍 GPS data
         ...gpsData,
       };
 
       console.log("✅ Clocking in as:", employeeName);
 
       const docRef = await addDoc(collection(db, "job_time_entries"), entryData);
-      
+
       setCurrentEntry({ id: docRef.id, ...entryData });
       setClockedIn(true);
       setTotalLunchTime(0);
@@ -387,7 +423,7 @@ export default function TimeClock() {
       try {
         await notifyCrewClockIn(employeeName, job?.displayName || "Unknown Job", gpsData);
       } catch (smsError) {
-        console.error('Error sending clock in notification:', smsError);
+        console.error("Error sending clock in notification:", smsError);
       }
 
       Swal.fire({
@@ -403,13 +439,12 @@ export default function TimeClock() {
     }
   };
 
-  // 🍔 NEW: Start lunch break
   const handleStartLunch = async () => {
     if (!currentEntry) return;
 
     try {
       const now = new Date().toISOString();
-      
+
       await updateDoc(doc(db, "job_time_entries", currentEntry.id), {
         lunchStartTime: now,
         updatedAt: now,
@@ -419,10 +454,11 @@ export default function TimeClock() {
       setLunchStartTime(now);
       setCurrentEntry({ ...currentEntry, lunchStartTime: now });
 
-      // Notify admin via Pushover
       try {
         await notifyLunchStart(currentEntry.crewName || user.displayName || user.email, currentEntry.jobName || null);
-      } catch (e) { console.error("Pushover lunch start error:", e); }
+      } catch (e) {
+        console.error("Pushover lunch start error:", e);
+      }
 
       Swal.fire({
         icon: "info",
@@ -437,7 +473,6 @@ export default function TimeClock() {
     }
   };
 
-  // 🍔 NEW: End lunch break
   const handleEndLunch = async () => {
     if (!currentEntry || !lunchStartTime) return;
 
@@ -445,9 +480,8 @@ export default function TimeClock() {
       const now = new Date().toISOString();
       const lunchStart = moment(lunchStartTime);
       const lunchEnd = moment(now);
-      const lunchMinutes = lunchEnd.diff(lunchStart, 'minutes');
+      const lunchMinutes = lunchEnd.diff(lunchStart, "minutes");
 
-      // Add to existing lunch time
       const totalLunchMinutes = (currentEntry.lunchMinutes || 0) + lunchMinutes;
 
       await updateDoc(doc(db, "job_time_entries", currentEntry.id), {
@@ -459,16 +493,17 @@ export default function TimeClock() {
       setOnLunch(false);
       setLunchStartTime(null);
       setTotalLunchTime(totalLunchMinutes * 60);
-      setCurrentEntry({ 
-        ...currentEntry, 
+      setCurrentEntry({
+        ...currentEntry,
         lunchEndTime: now,
-        lunchMinutes: totalLunchMinutes
+        lunchMinutes: totalLunchMinutes,
       });
 
-      // Notify admin via Pushover
       try {
         await notifyLunchEnd(currentEntry.crewName || user.displayName || user.email, lunchMinutes, currentEntry.jobName || null);
-      } catch (e) { console.error("Pushover lunch end error:", e); }
+      } catch (e) {
+        console.error("Pushover lunch end error:", e);
+      }
 
       Swal.fire({
         icon: "success",
@@ -490,13 +525,11 @@ export default function TimeClock() {
       const now = new Date().toISOString();
       const clockInTime = moment(currentEntry.clockIn);
       const clockOutTime = moment(now);
-      const totalHours = clockOutTime.diff(clockInTime, 'hours', true);
-      
-      // 🍔 UPDATED: Subtract lunch time from total hours
+      const totalHours = clockOutTime.diff(clockInTime, "hours", true);
+
       const lunchHours = (currentEntry.lunchMinutes || 0) / 60;
       const workedHours = totalHours - lunchHours;
 
-      // 📍 Capture GPS on clock-out (soft — never blocks clock-out)
       let gpsOutData = {};
       try {
         const position = await new Promise((resolve, reject) =>
@@ -508,8 +541,6 @@ export default function TimeClock() {
         );
         const { latitude, longitude, accuracy } = position.coords;
 
-        // Use stored job site coords from clock-in entry (gpsLat/gpsLng saved at clock-in)
-        // Fall back to stored customer geoLat/geoLng if available
         const jobLat = currentEntry.gpsJobLat || null;
         const jobLng = currentEntry.gpsJobLng || null;
 
@@ -531,11 +562,14 @@ export default function TimeClock() {
             gpsOutDistanceMiles: parseFloat((distanceFeet / 5280).toFixed(2)),
           };
         } else {
-          gpsOutData = { gpsOutLat: latitude, gpsOutLng: longitude, gpsOutAccuracy: Math.round(accuracy) };
+          gpsOutData = {
+            gpsOutLat: latitude,
+            gpsOutLng: longitude,
+            gpsOutAccuracy: Math.round(accuracy),
+          };
         }
         console.log("📍 Clock-out GPS captured:", gpsOutData);
 
-        // ⚠️ Warn if clocking out far from job site (never blocks)
         if (gpsOutData.gpsOutDistanceFeet != null && gpsOutData.gpsOutDistanceFeet > 500) {
           await Swal.fire({
             icon: "warning",
@@ -547,7 +581,6 @@ export default function TimeClock() {
             confirmButtonColor: "#d32f2f",
           });
 
-          // Notify admin immediately
           try {
             const empName = currentEntry.crewName || user.displayName || user.email;
             await notifyFailedClockOut(
@@ -580,7 +613,7 @@ export default function TimeClock() {
       setOnLunch(false);
       setLunchStartTime(null);
       setTotalLunchTime(0);
-      
+
       await loadTodayHours();
 
       try {
@@ -590,7 +623,7 @@ export default function TimeClock() {
           jobAddress: currentEntry.jobAddress || null,
         });
       } catch (smsError) {
-        console.error('Error sending clock out notification:', smsError);
+        console.error("Error sending clock out notification:", smsError);
       }
 
       Swal.fire({
@@ -598,7 +631,7 @@ export default function TimeClock() {
         title: "Clocked Out!",
         html: `
           <p>Total time: <strong>${totalHours.toFixed(2)} hours</strong></p>
-          ${currentEntry.lunchMinutes ? `<p>Lunch break: <strong>${currentEntry.lunchMinutes} minutes</strong></p>` : ''}
+          ${currentEntry.lunchMinutes ? `<p>Lunch break: <strong>${currentEntry.lunchMinutes} minutes</strong></p>` : ""}
           <p>You worked: <strong>${workedHours.toFixed(2)} hours</strong></p>
           <p>Your time is pending approval</p>
         `,
@@ -626,17 +659,16 @@ export default function TimeClock() {
   }
 
   return (
-    <Container sx={{ mt: 3, pb: 4, maxWidth: 'sm' }}>
-      <Typography variant="h4" gutterBottom sx={{ textAlign: 'center', mb: 3 }}>
+    <Container sx={{ mt: 3, pb: 4, maxWidth: "sm" }}>
+      <Typography variant="h4" gutterBottom sx={{ textAlign: "center", mb: 3 }}>
         Time Clock
       </Typography>
 
-      <Typography variant="body2" color="text.secondary" sx={{ textAlign: 'center', mb: 2 }}>
+      <Typography variant="body2" color="text.secondary" sx={{ textAlign: "center", mb: 2 }}>
         Welcome, {employeeInfo?.name || user.displayName || user.email}
       </Typography>
 
-      {/* Today's Summary */}
-      <Card sx={{ mb: 3, backgroundColor: '#e3f2fd' }}>
+      <Card sx={{ mb: 3, backgroundColor: "#e3f2fd" }}>
         <CardContent>
           <Typography variant="h6" color="primary" gutterBottom>
             Today's Hours
@@ -645,34 +677,33 @@ export default function TimeClock() {
             {todayHours.toFixed(1)}h
           </Typography>
           <Typography variant="caption" color="text.secondary">
-            {moment().format('dddd, MMMM D, YYYY')}
+            {moment().format("dddd, MMMM D, YYYY")}
           </Typography>
         </CardContent>
       </Card>
 
-      {/* Clock Status */}
       <Paper sx={{ p: 3, mb: 3 }}>
-        <Box sx={{ textAlign: 'center' }}>
+        <Box sx={{ textAlign: "center" }}>
           <Typography variant="h6" gutterBottom>
             {onLunch ? (
-              <Chip 
-                icon={<RestaurantIcon />} 
-                label="ON LUNCH BREAK" 
-                color="warning" 
-                sx={{ fontSize: '1rem', py: 2 }}
+              <Chip
+                icon={<RestaurantIcon />}
+                label="ON LUNCH BREAK"
+                color="warning"
+                sx={{ fontSize: "1rem", py: 2 }}
               />
             ) : clockedIn ? (
-              <Chip 
-                icon={<AccessTimeIcon />} 
-                label="CLOCKED IN" 
-                color="success" 
-                sx={{ fontSize: '1rem', py: 2 }}
+              <Chip
+                icon={<AccessTimeIcon />}
+                label="CLOCKED IN"
+                color="success"
+                sx={{ fontSize: "1rem", py: 2 }}
               />
             ) : (
-              <Chip 
-                label="NOT CLOCKED IN" 
-                color="default" 
-                sx={{ fontSize: '1rem', py: 2 }}
+              <Chip
+                label="NOT CLOCKED IN"
+                color="default"
+                sx={{ fontSize: "1rem", py: 2 }}
               />
             )}
           </Typography>
@@ -680,7 +711,7 @@ export default function TimeClock() {
           {clockedIn && currentEntry && (
             <Box sx={{ mt: 2 }}>
               <Typography variant="body2" color="text.secondary">
-                Clocked in at: {moment(currentEntry.clockIn).format('h:mm A')}
+                Clocked in at: {moment(currentEntry.clockIn).format("h:mm A")}
               </Typography>
               {!onLunch && (
                 <>
@@ -703,7 +734,7 @@ export default function TimeClock() {
                 </>
               )}
               {totalLunchTime > 0 && !onLunch && (
-                <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
+                <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: "block" }}>
                   Total lunch: {Math.floor(totalLunchTime / 60)} minutes
                 </Typography>
               )}
@@ -715,14 +746,13 @@ export default function TimeClock() {
         </Box>
       </Paper>
 
-      {/* Clock In/Out Controls */}
       <Paper sx={{ p: 3 }}>
         {!clockedIn ? (
           <Box>
             <Typography variant="h6" gutterBottom>
               Select Job
             </Typography>
-            
+
             {jobs.length === 0 ? (
               <Typography color="error" sx={{ mb: 2 }}>
                 No jobs available. Contact your manager.
@@ -752,16 +782,15 @@ export default function TimeClock() {
               onClick={handleClockIn}
               disabled={!selectedJob || jobs.length === 0}
               startIcon={<AccessTimeIcon />}
-              sx={{ py: 2, fontSize: '1.1rem' }}
+              sx={{ py: 2, fontSize: "1.1rem" }}
             >
               CLOCK IN
             </Button>
           </Box>
         ) : (
           <Box>
-            {/* 🍔 NEW: Lunch break buttons */}
             {!onLunch ? (
-              <Box sx={{ display: 'flex', gap: 2, mb: 2 }}>
+              <Box sx={{ display: "flex", gap: 2, mb: 2 }}>
                 <Button
                   fullWidth
                   variant="outlined"
@@ -789,7 +818,7 @@ export default function TimeClock() {
                 </Button>
               </Box>
             )}
-            
+
             <Button
               fullWidth
               variant="contained"
@@ -797,13 +826,13 @@ export default function TimeClock() {
               size="large"
               onClick={handleClockOut}
               startIcon={<CheckCircleIcon />}
-              sx={{ py: 2, fontSize: '1.1rem' }}
+              sx={{ py: 2, fontSize: "1.1rem" }}
               disabled={onLunch}
             >
               CLOCK OUT
             </Button>
             {onLunch && (
-              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', textAlign: 'center', mt: 1 }}>
+              <Typography variant="caption" color="text.secondary" sx={{ display: "block", textAlign: "center", mt: 1 }}>
                 End lunch before clocking out
               </Typography>
             )}
@@ -811,17 +840,16 @@ export default function TimeClock() {
         )}
       </Paper>
 
-      {/* Instructions */}
-      <Paper sx={{ p: 2, mt: 3, backgroundColor: '#f5f5f5' }}>
+      <Paper sx={{ p: 2, mt: 3, backgroundColor: "#f5f5f5" }}>
         <Typography variant="subtitle2" gutterBottom fontWeight="bold">
           Instructions:
         </Typography>
         <Typography variant="body2">
-          1. Select the job you're working on<br/>
-          2. Click "CLOCK IN" when you start work<br/>
-          3. Click "START LUNCH" when taking a break 🍔<br/>
-          4. Click "END LUNCH" when returning to work<br/>
-          5. Click "CLOCK OUT" when you're done<br/>
+          1. Select the job you're working on<br />
+          2. Click "CLOCK IN" when you start work<br />
+          3. Click "START LUNCH" when taking a break 🍔<br />
+          4. Click "END LUNCH" when returning to work<br />
+          5. Click "CLOCK OUT" when you're done<br />
           6. Your hours will be sent for approval
         </Typography>
       </Paper>

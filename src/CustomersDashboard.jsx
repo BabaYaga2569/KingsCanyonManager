@@ -15,6 +15,8 @@ import {
   InputLabel,
   Select,
   MenuItem,
+  TextField,
+  InputAdornment,
 } from "@mui/material";
 import { useNavigate } from "react-router-dom";
 import Swal from "sweetalert2";
@@ -22,13 +24,17 @@ import PersonAddIcon from "@mui/icons-material/PersonAdd";
 import VisibilityIcon from "@mui/icons-material/Visibility";
 import SortIcon from "@mui/icons-material/Sort";
 import DownloadIcon from "@mui/icons-material/Download";
-import { markAsViewed } from './useNotificationCounts';
-import { exportCustomersToExcel, exportCustomersToCSV } from './utils/kclExportUtils';
+import GpsFixedIcon from "@mui/icons-material/GpsFixed";
+import SearchIcon from "@mui/icons-material/Search";
+import { markAsViewed } from "./useNotificationCounts";
+import { exportCustomersToExcel, exportCustomersToCSV } from "./utils/kclExportUtils";
 
 export default function CustomersDashboard() {
   const [customers, setCustomers] = useState([]);
   const [sortedCustomers, setSortedCustomers] = useState([]);
   const [sortOrder, setSortOrder] = useState("value-high");
+  const [gpsFilter, setGpsFilter] = useState("all"); // all | ready | missing
+  const [searchTerm, setSearchTerm] = useState("");
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
 
@@ -48,11 +54,11 @@ export default function CustomersDashboard() {
   useEffect(() => {
     fetchCustomers();
   }, []);
+
   useEffect(() => {
-    markAsViewed('customers');
+    markAsViewed("customers");
   }, []);
 
-  // Sort customers whenever customers or sortOrder changes
   useEffect(() => {
     const sorted = [...customers].sort((a, b) => {
       switch (sortOrder) {
@@ -76,8 +82,37 @@ export default function CustomersDashboard() {
           return 0;
       }
     });
-    setSortedCustomers(sorted);
-  }, [customers, sortOrder]);
+
+    const gpsFiltered =
+      gpsFilter === "ready"
+        ? sorted.filter((c) => c.geoLat && c.geoLng)
+        : gpsFilter === "missing"
+          ? sorted.filter((c) => !c.geoLat || !c.geoLng)
+          : sorted;
+
+    const search = searchTerm.trim().toLowerCase();
+
+    const fullyFiltered = !search
+      ? gpsFiltered
+      : gpsFiltered.filter((customer) => {
+          const searchableText = [
+            customer.name,
+            customer.email,
+            customer.phone,
+            customer.address,
+            customer.city,
+            customer.state,
+            customer.zip,
+          ]
+            .filter(Boolean)
+            .join(" ")
+            .toLowerCase();
+
+          return searchableText.includes(search);
+        });
+
+    setSortedCustomers(fullyFiltered);
+  }, [customers, sortOrder, gpsFilter, searchTerm]);
 
   const handleDelete = async (id, name) => {
     const confirm = await Swal.fire({
@@ -113,13 +148,36 @@ export default function CustomersDashboard() {
 
   return (
     <Box sx={{ p: { xs: 2, sm: 3 } }}>
-      {/* Header with Sort Dropdown */}
-      <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mb: 3, flexWrap: "wrap", gap: 2 }}>
-        <Typography variant="h5" sx={{ fontSize: { xs: '1.5rem', sm: '2rem' } }}>
+      <Box
+        sx={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          mb: 3,
+          flexWrap: "wrap",
+          gap: 2,
+        }}
+      >
+        <Typography variant="h5" sx={{ fontSize: { xs: "1.5rem", sm: "2rem" } }}>
           Customers ({sortedCustomers.length})
         </Typography>
 
         <Box sx={{ display: "flex", gap: 2, flexWrap: "wrap" }}>
+          <TextField
+            size="small"
+            placeholder="Search name, phone, email, address..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            sx={{ minWidth: { xs: "100%", sm: 280 } }}
+            InputProps={{
+              startAdornment: (
+                <InputAdornment position="start">
+                  <SearchIcon />
+                </InputAdornment>
+              ),
+            }}
+          />
+
           <FormControl size="small" sx={{ minWidth: 200 }}>
             <InputLabel id="sort-label">
               <SortIcon sx={{ fontSize: 18, mr: 0.5, verticalAlign: "middle" }} />
@@ -144,12 +202,23 @@ export default function CustomersDashboard() {
 
           <Button
             variant="outlined"
+            size="small"
+            startIcon={<GpsFixedIcon />}
+            onClick={() => setGpsFilter((f) => (f === "missing" ? "all" : "missing"))}
+            color={gpsFilter === "missing" ? "error" : "inherit"}
+          >
+            {gpsFilter === "missing" ? "Showing: No GPS" : "No GPS Only"}
+          </Button>
+
+          <Button
+            variant="outlined"
             startIcon={<DownloadIcon />}
             onClick={() => exportCustomersToExcel(sortedCustomers)}
             size="small"
           >
             Excel
           </Button>
+
           <Button
             variant="outlined"
             startIcon={<DownloadIcon />}
@@ -158,18 +227,20 @@ export default function CustomersDashboard() {
           >
             CSV
           </Button>
+
           <Button
             variant="contained"
             startIcon={<PersonAddIcon />}
             onClick={() => navigate("/customer-edit/new")}
-            sx={{ display: { xs: 'none', sm: 'inline-flex' } }}
+            sx={{ display: { xs: "none", sm: "inline-flex" } }}
           >
             Add Customer
           </Button>
+
           <Button
             variant="contained"
             onClick={() => navigate("/customer-edit/new")}
-            sx={{ display: { xs: 'inline-flex', sm: 'none' } }}
+            sx={{ display: { xs: "inline-flex", sm: "none" } }}
           >
             <PersonAddIcon />
           </Button>
@@ -179,18 +250,17 @@ export default function CustomersDashboard() {
       {sortedCustomers.length === 0 ? (
         <Paper sx={{ p: 4, textAlign: "center" }}>
           <Typography variant="h6" gutterBottom>
-            No Customers Yet
+            No Customers Found
           </Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-            Customers will be created automatically when you create bids.<br />
-            Or click "Add Customer" to add one manually.
+            Try changing your search or filters.
           </Typography>
           <Button
             variant="contained"
             startIcon={<PersonAddIcon />}
             onClick={() => navigate("/customer-edit/new")}
           >
-            Add Your First Customer
+            Add Customer
           </Button>
         </Paper>
       ) : (
@@ -223,11 +293,13 @@ export default function CustomersDashboard() {
                     {customer.email}
                   </Typography>
                 )}
+
                 {customer.phone && (
                   <Typography variant="body2" color="text.secondary" sx={{ mb: 0.5 }}>
                     {customer.phone}
                   </Typography>
                 )}
+
                 {customer.address && (
                   <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
                     {customer.address}
@@ -238,6 +310,32 @@ export default function CustomersDashboard() {
                   <Chip label={`${customer.bidCount || 0} Bids`} size="small" variant="outlined" />
                   <Chip label={`${customer.contractCount || 0} Contracts`} size="small" variant="outlined" />
                   <Chip label={`${customer.invoiceCount || 0} Invoices`} size="small" variant="outlined" />
+
+                  {customer.geoLat && customer.geoLng ? (
+                    <Chip
+                      icon={<GpsFixedIcon />}
+                      label="GPS Ready"
+                      size="small"
+                      sx={{
+                        bgcolor: "#e8f5e9",
+                        color: "#2e7d32",
+                        fontWeight: 700,
+                        "& .MuiChip-icon": { color: "#2e7d32" },
+                      }}
+                    />
+                  ) : (
+                    <Chip
+                      icon={<GpsFixedIcon />}
+                      label="No GPS"
+                      size="small"
+                      sx={{
+                        bgcolor: "#ffebee",
+                        color: "#c62828",
+                        fontWeight: 700,
+                        "& .MuiChip-icon": { color: "#c62828" },
+                      }}
+                    />
+                  )}
                 </Box>
               </CardContent>
 
