@@ -359,8 +359,13 @@ export default function TimeClock() {
     const jobLat = customerDocData?.geoLat || null;
     const jobLng = customerDocData?.geoLng || null;
 
-    if (!jobLat || !jobLng) {
-      console.warn("📍 No verified coordinates for this customer — address was not geocoded on save");
+        if (!jobLat || !jobLng) {
+      console.warn("📍 No verified coordinates for this customer — address was not geocoded on save", {
+        customerId,
+        jobAddress,
+        geoLat: customerDocData?.geoLat || null,
+        geoLng: customerDocData?.geoLng || null,
+      });
 
       try {
         await notifyClockInNoCoordinates(employeeName, selectedJobName, jobAddress);
@@ -371,12 +376,14 @@ export default function TimeClock() {
       await Swal.fire({
         icon: "error",
         title: "Address Not Verified",
-        html: "This job site has no verified GPS coordinates.<br/><br/>Ask your manager to update the customer address before clocking in.",
+        html: `This job site has no verified GPS coordinates.<br/><br/>
+               <strong>Address on file:</strong><br/>
+               <span style="color:#666">${jobAddress || "No address on file"}</span><br/><br/>
+               Ask your manager to open the customer profile and save valid Latitude / Longitude coordinates before clocking in.`,
         confirmButtonText: "OK",
       });
       return { passed: false, gpsData: {} };
     }
-
     console.log(`📍 Job site (stored coords): ${jobLat}, ${jobLng}`);
 
     let distanceFeet = calculateDistanceFeet(latitude, longitude, jobLat, jobLng);
@@ -500,6 +507,26 @@ export default function TimeClock() {
       const { passed, gpsData } = await runGpsCheck(job);
       if (!passed) return;
 
+      // Safety check: prevent duplicate clock-ins
+      const existingOpenQuery = query(
+        collection(db, "job_time_entries"),
+        where("crewId", "==", user.uid),
+        where("clockOut", "==", null)
+      );
+      const existingSnap = await getDocs(existingOpenQuery);
+      const existingOpen = existingSnap.docs.filter(d => {
+        const clockInTime = new Date(d.data().clockIn).getTime();
+        return clockInTime >= Date.now() - 12 * 60 * 60 * 1000;
+      });
+      if (existingOpen.length > 0) {
+        const openEntry = { id: existingOpen[0].id, ...existingOpen[0].data() };
+        setCurrentEntry(openEntry);
+        setClockedIn(true);
+        setSelectedJob(openEntry.jobId);
+        Swal.fire({ icon: "info", title: "Already Clocked In", text: "You are already clocked in. Restoring your session.", timer: 2000, showConfirmButton: false });
+        return;
+      }
+
       const now = new Date().toISOString();
       const employeeName = employeeInfo?.name || user.displayName || user.email;
 
@@ -511,6 +538,7 @@ export default function TimeClock() {
         isAdminClockTest: userRole === "admin",
         jobId: selectedJob,
         jobName: job?.displayName || "Unknown Job",
+        clientName: job?.clientName || job?.customerName || "Unknown Client",
         jobDescription: job?.displayName || "No description",
         clockIn: now,
         clockOut: null,
@@ -532,7 +560,10 @@ export default function TimeClock() {
       setTotalLunchTime(0);
 
       try {
-        await notifyCrewClockIn(employeeName, job?.displayName || "Unknown Job", gpsData);
+        const clockInLocation = gpsData?.jobAddress
+          ? `${job?.clientName || job?.customerName || "Unknown"} — ${gpsData.jobAddress}`
+          : job?.clientName || job?.customerName || job?.displayName || "Unknown Job";
+        await notifyCrewClockIn(employeeName, clockInLocation);
       } catch (smsError) {
         console.error("Error sending clock in notification:", smsError);
       }

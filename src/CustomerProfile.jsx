@@ -38,7 +38,6 @@ export default function CustomerProfile() {
     jobs: [],
   });
 
-  // Schedule Bid Appointment dialog state
   const [scheduleDialogOpen, setScheduleDialogOpen] = useState(false);
   const [scheduleSaving, setScheduleSaving] = useState(false);
   const [appointmentForm, setAppointmentForm] = useState({
@@ -83,6 +82,12 @@ export default function CustomerProfile() {
     fetchCustomerAndDocs();
   }, [id, navigate]);
 
+  const parseCoordinate = (value) => {
+    if (value === null || value === undefined || value === "") return null;
+    const parsed = parseFloat(String(value).trim());
+    return Number.isFinite(parsed) ? parsed : NaN;
+  };
+
   const handleSave = async () => {
     if (!customer.name || !customer.phone || !customer.address) {
       const missing = [];
@@ -94,40 +99,91 @@ export default function CustomerProfile() {
     }
 
     try {
-      // 📍 Geocode the address — use separate fields to avoid double-city bug
       let geoLat = null;
       let geoLng = null;
-      const fullAddress = [customer.address, customer.city, customer.state, customer.zip]
-        .filter(Boolean).join(", ");
 
-      try {
-        const encoded = encodeURIComponent(fullAddress);
-        const geoRes = await fetch(
-          `https://nominatim.openstreetmap.org/search?q=${encoded}&format=json&limit=1`,
-          { headers: { "User-Agent": "KCLManager/1.0 (Kings Canyon Landscaping)" } }
+      const manualLat = parseCoordinate(customer.geoLat);
+      const manualLng = parseCoordinate(customer.geoLng);
+
+      if ((customer.geoLat || customer.geoLng) && (!Number.isFinite(manualLat) || !Number.isFinite(manualLng))) {
+        Swal.fire(
+          "Invalid Coordinates",
+          "Latitude and Longitude must both be valid numbers.",
+          "warning"
         );
-        const geoData = await geoRes.json();
-        if (geoData.length > 0) {
-          geoLat = parseFloat(geoData[0].lat);
-          geoLng = parseFloat(geoData[0].lon);
-          console.log(`📍 Geocoded: ${fullAddress} → ${geoLat}, ${geoLng}`);
-        } else {
-          console.warn("📍 Could not geocode address:", fullAddress);
+        return;
+      }
+
+      if (Number.isFinite(manualLat) && Number.isFinite(manualLng)) {
+        if (manualLat < -90 || manualLat > 90 || manualLng < -180 || manualLng > 180) {
+          Swal.fire(
+            "Invalid Coordinates",
+            "Latitude must be between -90 and 90, and Longitude must be between -180 and 180.",
+            "warning"
+          );
+          return;
+        }
+
+        geoLat = manualLat;
+        geoLng = manualLng;
+        console.log(`📍 Using manually entered coordinates: ${geoLat}, ${geoLng}`);
+      } else {
+        const fullAddress = [customer.address, customer.city, customer.state, customer.zip]
+          .filter(Boolean)
+          .join(", ");
+
+        try {
+          const encoded = encodeURIComponent(fullAddress);
+          const geoRes = await fetch(
+            `https://nominatim.openstreetmap.org/search?q=${encoded}&format=json&limit=1`,
+            { headers: { "User-Agent": "KCLManager/1.0 (Kings Canyon Landscaping)" } }
+          );
+
+          const geoData = await geoRes.json();
+
+          if (geoData.length > 0) {
+            geoLat = parseFloat(geoData[0].lat);
+            geoLng = parseFloat(geoData[0].lon);
+            console.log(`📍 Geocoded: ${fullAddress} → ${geoLat}, ${geoLng}`);
+          } else {
+            console.warn("📍 Could not geocode address:", fullAddress);
+            const { value: continueAnyway } = await Swal.fire({
+              icon: "warning",
+              title: "Address Not Found",
+              html: `The address <strong>${fullAddress}</strong> could not be verified on the map.<br/><br/>
+                     Crew members will <strong>not be GPS-blocked</strong> for this customer's jobs until valid coordinates are saved.<br/><br/>
+                     You can save anyway now, then come back and enter Latitude/Longitude manually if needed.`,
+              showCancelButton: true,
+              confirmButtonText: "Save Anyway",
+              cancelButtonText: "Go Back & Fix Address",
+            });
+            if (!continueAnyway) return;
+          }
+        } catch (geoErr) {
+          console.warn("📍 Geocoding error:", geoErr);
           const { value: continueAnyway } = await Swal.fire({
             icon: "warning",
-            title: "Address Not Found",
-            html: `The address <strong>${fullAddress}</strong> could not be verified on the map.<br/><br/>
-                   Crew members will <strong>not be GPS-blocked</strong> for this customer's jobs until a valid address is saved.<br/><br/>
-                   Continue saving anyway?`,
+            title: "Geocoding Failed",
+            html: `We could not verify this address right now.<br/><br/>
+                   Crew members will <strong>not be GPS-blocked</strong> until valid coordinates are saved.<br/><br/>
+                   You can save anyway now, then enter Latitude/Longitude manually later.`,
             showCancelButton: true,
             confirmButtonText: "Save Anyway",
-            cancelButtonText: "Go Back & Fix Address",
+            cancelButtonText: "Cancel",
           });
           if (!continueAnyway) return;
         }
-      } catch (geoErr) {
-        console.warn("📍 Geocoding error:", geoErr);
       }
+
+      const resolvedGeoSource =
+        Number.isFinite(manualLat) && Number.isFinite(manualLng)
+          ? "manual"
+          : (Number.isFinite(geoLat) && Number.isFinite(geoLng) ? "geocoded" : "");
+
+      const resolvedGeoVerifiedAt =
+        Number.isFinite(geoLat) && Number.isFinite(geoLng)
+          ? new Date().toISOString()
+          : null;
 
       await updateDoc(doc(db, "customers", id), {
         name: customer.name,
@@ -141,7 +197,17 @@ export default function CustomerProfile() {
         nameLower: customer.name.toLowerCase(),
         geoLat,
         geoLng,
+        geoSource: resolvedGeoSource,
+        geoVerifiedAt: resolvedGeoVerifiedAt,
       });
+
+      setCustomer((prev) => ({
+        ...prev,
+        geoLat,
+        geoLng,
+        geoSource: resolvedGeoSource,
+        geoVerifiedAt: resolvedGeoVerifiedAt,
+      }));
 
       Swal.fire("Saved!", "Customer updated successfully.", "success");
       setEditing(false);
@@ -195,7 +261,7 @@ export default function CustomerProfile() {
         customerId: id,
         clientName: customer.name,
         clientPhone: customer.phone || "",
-        clientAddress: customer.address || "",
+        clientAddress: [customer.address, customer.city, customer.state, customer.zip].filter(Boolean).join(", "),
         bidId: bidRef.id,
         type: "bid-appointment",
         jobDescription: `Bid Appointment — ${customer.name}`,
@@ -214,7 +280,7 @@ export default function CustomerProfile() {
       try {
         await notifyBidAppointmentScheduled(
           customer.name,
-          customer.address || "",
+          [customer.address, customer.city, customer.state, customer.zip].filter(Boolean).join(", "),
           appointmentForm.date,
           appointmentForm.time
         );
@@ -231,7 +297,7 @@ export default function CustomerProfile() {
           <p><strong>${customer.name}</strong></p>
           <p>📅 ${new Date(appointmentForm.date + "T12:00:00").toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}</p>
           <p>🕐 ${new Date(`2000-01-01T${appointmentForm.time}`).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true })}</p>
-          <p>📍 ${customer.address || "No address on file"}</p>
+          <p>📍 ${[customer.address, customer.city, customer.state, customer.zip].filter(Boolean).join(", ") || "No address on file"}</p>
           <p style="margin-top:12px;font-size:13px;color:#555">A draft bid and calendar entry have been created.</p>
         `,
         confirmButtonText: "View on Calendar",
@@ -272,10 +338,10 @@ export default function CustomerProfile() {
     return null;
   }
 
+  const fullAddress = [customer.address, customer.city, customer.state, customer.zip].filter(Boolean).join(", ");
+
   return (
     <Container sx={{ mt: 4, mb: 6 }}>
-
-      {/* Header row — Back + action buttons */}
       <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mb: 2, flexWrap: "wrap", gap: 1 }}>
         <Button
           startIcon={<ArrowBackIcon />}
@@ -336,28 +402,29 @@ export default function CustomerProfile() {
               onChange={(e) => setCustomer({ ...customer, phone: e.target.value })}
               fullWidth
             />
-            {/* ── Address broken into separate fields to prevent double-city geocoding bug ── */}
+
             <TextField
               label="Street Address"
               value={customer.address || ""}
               onChange={(e) => setCustomer({ ...customer, address: e.target.value })}
               fullWidth
               required
-              placeholder="e.g., 9779 S Dike Rd"
+              placeholder="e.g., 2190 White Water Way"
               helperText="Street only — city/state/zip entered separately below"
             />
+
             <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", sm: "2fr 1fr 1fr" }, gap: 2 }}>
               <TextField
                 label="City"
                 value={customer.city || ""}
                 onChange={(e) => setCustomer({ ...customer, city: e.target.value })}
                 fullWidth
-                placeholder="e.g., Mohave Valley"
+                placeholder="e.g., Bullhead City"
               />
               <TextField
                 label="State"
                 value={customer.state || "AZ"}
-                onChange={(e) => setCustomer({ ...customer, state: e.target.value })}
+                onChange={(e) => setCustomer({ ...customer, state: e.target.value.toUpperCase() })}
                 fullWidth
               />
               <TextField
@@ -365,9 +432,29 @@ export default function CustomerProfile() {
                 value={customer.zip || ""}
                 onChange={(e) => setCustomer({ ...customer, zip: e.target.value })}
                 fullWidth
-                placeholder="86446"
+                placeholder="86442"
               />
             </Box>
+
+            <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr" }, gap: 2 }}>
+              <TextField
+                label="Latitude"
+                value={customer.geoLat ?? ""}
+                onChange={(e) => setCustomer({ ...customer, geoLat: e.target.value })}
+                fullWidth
+                placeholder="35.094421237737336"
+                helperText="Optional manual override if address geocoding fails"
+              />
+              <TextField
+                label="Longitude"
+                value={customer.geoLng ?? ""}
+                onChange={(e) => setCustomer({ ...customer, geoLng: e.target.value })}
+                fullWidth
+                placeholder="-114.63220765213875"
+                helperText="Optional manual override if address geocoding fails"
+              />
+            </Box>
+
             <TextField
               label="Notes"
               multiline
@@ -376,6 +463,7 @@ export default function CustomerProfile() {
               onChange={(e) => setCustomer({ ...customer, notes: e.target.value })}
               fullWidth
             />
+
             <Button variant="text" onClick={() => setEditing(false)}>
               Cancel
             </Button>
@@ -392,9 +480,19 @@ export default function CustomerProfile() {
                 <strong>Phone:</strong> {customer.phone}
               </Typography>
             )}
-            {customer.address && (
+            {fullAddress && (
               <Typography variant="body1" sx={{ mb: 1 }}>
-                <strong>Address:</strong> {[customer.address, customer.city, customer.state, customer.zip].filter(Boolean).join(", ")}
+                <strong>Address:</strong> {fullAddress}
+              </Typography>
+            )}
+            {(customer.geoLat != null || customer.geoLng != null) && (
+              <Typography variant="body1" sx={{ mb: 1 }}>
+                <strong>GPS Coordinates:</strong> {customer.geoLat}, {customer.geoLng}
+              </Typography>
+            )}
+            {customer.geoSource && (
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                <strong>Coordinate Source:</strong> {customer.geoSource}
               </Typography>
             )}
             {customer.notes && (
@@ -409,14 +507,12 @@ export default function CustomerProfile() {
         )}
       </Paper>
 
-      {/* Service History */}
       <Paper sx={{ p: 3 }}>
         <Typography variant="h6" gutterBottom>
           Service History
         </Typography>
         <Divider sx={{ mb: 2 }} />
 
-        {/* Bids */}
         <Box sx={{ mb: 3 }}>
           <Typography variant="subtitle1" sx={{ fontWeight: "bold", mb: 1 }}>
             Bids ({linkedDocs.bids.length})
@@ -464,7 +560,6 @@ export default function CustomerProfile() {
           )}
         </Box>
 
-        {/* Contracts */}
         <Box sx={{ mb: 3 }}>
           <Typography variant="subtitle1" sx={{ fontWeight: "bold", mb: 1 }}>
             Contracts ({linkedDocs.contracts.length})
@@ -494,7 +589,6 @@ export default function CustomerProfile() {
           )}
         </Box>
 
-        {/* Invoices */}
         <Box sx={{ mb: 3 }}>
           <Typography variant="subtitle1" sx={{ fontWeight: "bold", mb: 1 }}>
             Invoices ({linkedDocs.invoices.length})
@@ -529,7 +623,6 @@ export default function CustomerProfile() {
           )}
         </Box>
 
-        {/* Jobs */}
         <Box>
           <Typography variant="subtitle1" sx={{ fontWeight: "bold", mb: 1 }}>
             Jobs ({linkedDocs.jobs.length})
@@ -560,7 +653,6 @@ export default function CustomerProfile() {
         </Box>
       </Paper>
 
-      {/* Schedule Bid Appointment Dialog */}
       <Dialog
         open={scheduleDialogOpen}
         onClose={() => setScheduleDialogOpen(false)}
@@ -579,8 +671,8 @@ export default function CustomerProfile() {
               {customer.phone && (
                 <Typography variant="body2">📞 {customer.phone}</Typography>
               )}
-              {customer.address && (
-                <Typography variant="body2">📍 {customer.address}</Typography>
+              {fullAddress && (
+                <Typography variant="body2">📍 {fullAddress}</Typography>
               )}
             </Paper>
 
@@ -637,7 +729,6 @@ export default function CustomerProfile() {
           </Button>
         </DialogActions>
       </Dialog>
-
     </Container>
   );
 }

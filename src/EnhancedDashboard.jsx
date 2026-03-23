@@ -268,9 +268,17 @@ const EnhancedDashboard = () => {
 
       // ── SCHEDULE ──
       const schedulesSnapshot = await getDocs(collection(db, 'schedules'));
+      const todayStr = today.toISOString().split('T')[0]; // "YYYY-MM-DD"
       const todaySchedule = schedulesSnapshot.docs
-        .filter(d => { const sd = parseDate(d); return sd && sd >= today && sd < new Date(today.getTime() + 86400000); })
-        .map(d => ({ id: d.id, ...d.data(), date: parseDate(d) }))
+        .filter(d => {
+          const data = d.data();
+          return data.startDate === todayStr && data.status !== 'cancelled' && data.status !== 'Cancelled';
+        })
+        .map(d => {
+          const data = d.data();
+          const date = new Date(data.startDate + 'T' + (data.startTime || '08:00') + ':00');
+          return { id: d.id, ...data, date };
+        })
         .sort((a, b) => a.date - b.date)
         .slice(0, 5);
 
@@ -335,7 +343,7 @@ const EnhancedDashboard = () => {
       // ── ACTIVE CREW COUNT ──
       const crewSnapshot = await getDocs(query(collection(db, 'job_time_entries'), where('clockOut', '==', null)));
       const activeCrewCount = crewSnapshot.docs.length;
-      const onSiteCount = crewSnapshot.docs.filter(d => d.data().gpsDistance !== undefined && d.data().gpsDistance !== null).length;
+      const onSiteCount = crewSnapshot.docs.filter(d => d.data().gpsDistanceFeet != null && d.data().gpsDistanceFeet <= 500).length;
 
       setDashboardData({
         todayRevenue, weekRevenue, monthRevenue, yearRevenue,
