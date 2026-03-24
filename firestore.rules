@@ -26,13 +26,13 @@ service cloud.firestore {
       return isAuthenticated() && request.auth.uid == userId;
     }
     
-    // REPLACE WITH:
-function hasValidToken(tokenField) {
-  return request.auth == null &&
-         request.query.token != null &&
-         resource.data[tokenField] != null &&
-         resource.data[tokenField] == request.query.token;
-}
+    // FIXED: Single argument — checks resource.data[tokenField] against query token
+    function hasValidToken(tokenField) {
+      return request.auth == null &&
+             request.query.token != null &&
+             resource.data[tokenField] != null &&
+             resource.data[tokenField] == request.query.token;
+    }
     
     // ============================================
     // USERS COLLECTION (Employee Account Manager)
@@ -52,14 +52,14 @@ function hasValidToken(tokenField) {
     // ============================================
     match /bids/{bidId} {
       // Read: authenticated users OR valid signing token
-      allow read: if isGodOrAdmin() || hasValidToken(bidId, 'signingToken');
+      allow read: if isGodOrAdmin() || hasValidToken('signingToken');
       
       // Write: only admin
       allow write: if isGodOrAdmin();
       
       // Update: authenticated OR token holder (but only signature fields)
       allow update: if isGodOrAdmin() || 
-        (hasValidToken(bidId, 'signingToken') && 
+        (hasValidToken('signingToken') && 
          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['customerSignature', 'customerSignedAt', 'status', 'signedBy']));
     }
     
@@ -68,14 +68,14 @@ function hasValidToken(tokenField) {
     // ============================================
     match /contracts/{contractId} {
       // Read: authenticated users OR valid signing token
-      allow read: if isGodOrAdmin() || hasValidToken(contractId, 'signingToken');
+      allow read: if isGodOrAdmin() || hasValidToken('signingToken');
       
       // Write: only admin
       allow write: if isGodOrAdmin();
       
       // Update: authenticated OR token holder (but only signature fields)
       allow update: if isGodOrAdmin() || 
-        (hasValidToken(contractId, 'signingToken') && 
+        (hasValidToken('signingToken') && 
          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['customerSignature', 'customerSignedAt', 'status', 'signedBy']));
     }
     
