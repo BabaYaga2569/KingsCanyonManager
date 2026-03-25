@@ -53,8 +53,9 @@ export default function JobsManager() {
   const [jobs, setJobs] = useState([]);
   const [employees, setEmployees] = useState([]);
   const [sortedJobs, setSortedJobs] = useState([]);
-  const [sortOrder, setSortOrder] = useState("newest");
+  const [sortOrder, setSortOrder] = useState("oldest");
   const [jobTypeFilter, setJobTypeFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("all");
   const [searchTerm, setSearchTerm] = useState("");
   const [loading, setLoading] = useState(true);
   const [expandedClients, setExpandedClients] = useState({});
@@ -84,6 +85,133 @@ export default function JobsManager() {
   const fileInputRef = useRef(null);
   const galleryInputRef = useRef(null);
 
+  const normalizeStatus = (status) => (status || "").trim().toLowerCase();
+
+  const getJobDate = (job) => {
+    const raw = job?.createdAt || job?.startDate || 0;
+    if (raw?.toDate) return raw.toDate();
+    return new Date(raw);
+  };
+
+  const formatJobDate = (rawDate) => {
+    try {
+      const date = rawDate?.toDate ? rawDate.toDate() : new Date(rawDate);
+      if (Number.isNaN(date.getTime())) return "Unknown";
+      return date.toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      });
+    } catch {
+      return "Unknown";
+    }
+  };
+
+  const getJobAgeDays = (job) => {
+    try {
+      const created = getJobDate(job);
+      if (!(created instanceof Date) || Number.isNaN(created.getTime())) return null;
+      return Math.floor((Date.now() - created.getTime()) / 86400000);
+    } catch {
+      return null;
+    }
+  };
+
+  const getStaleLevel = (job) => {
+    const age = getJobAgeDays(job);
+    if (age == null) return null;
+    if (age >= 90) return "very-stale";
+    if (age >= 30) return "stale";
+    return null;
+  };
+
+  const compareJobs = (a, b, currentSortOrder) => {
+    switch (currentSortOrder) {
+      case "newest":
+        return getJobDate(b) - getJobDate(a);
+
+      case "oldest":
+        return getJobDate(a) - getJobDate(b);
+
+      case "name-asc":
+        return (a.clientName || "").localeCompare(b.clientName || "");
+
+      case "name-desc":
+        return (b.clientName || "").localeCompare(a.clientName || "");
+
+      case "status-active": {
+        const aIsMatch = normalizeStatus(a.status) === "active";
+        const bIsMatch = normalizeStatus(b.status) === "active";
+        if (aIsMatch && !bIsMatch) return -1;
+        if (!aIsMatch && bIsMatch) return 1;
+        return getJobDate(a) - getJobDate(b);
+      }
+
+      case "status-completed": {
+        const aIsMatch = normalizeStatus(a.status) === "completed";
+        const bIsMatch = normalizeStatus(b.status) === "completed";
+        if (aIsMatch && !bIsMatch) return -1;
+        if (!aIsMatch && bIsMatch) return 1;
+        return getJobDate(a) - getJobDate(b);
+      }
+
+      case "status-pending": {
+        const aIsMatch = normalizeStatus(a.status) === "pending";
+        const bIsMatch = normalizeStatus(b.status) === "pending";
+        if (aIsMatch && !bIsMatch) return -1;
+        if (!aIsMatch && bIsMatch) return 1;
+        return getJobDate(a) - getJobDate(b);
+      }
+
+      default:
+        return getJobDate(a) - getJobDate(b);
+    }
+  };
+
+  const compareClientGroups = ([clientA, jobsA], [clientB, jobsB], currentSortOrder) => {
+    switch (currentSortOrder) {
+      case "name-asc":
+        return clientA.localeCompare(clientB);
+
+      case "name-desc":
+        return clientB.localeCompare(clientA);
+
+      case "status-active": {
+        const aCount = jobsA.filter((job) => normalizeStatus(job.status) === "active").length;
+        const bCount = jobsB.filter((job) => normalizeStatus(job.status) === "active").length;
+        if (aCount !== bCount) return bCount - aCount;
+        return clientA.localeCompare(clientB);
+      }
+
+      case "status-completed": {
+        const aCount = jobsA.filter((job) => normalizeStatus(job.status) === "completed").length;
+        const bCount = jobsB.filter((job) => normalizeStatus(job.status) === "completed").length;
+        if (aCount !== bCount) return bCount - aCount;
+        return clientA.localeCompare(clientB);
+      }
+
+      case "status-pending": {
+        const aCount = jobsA.filter((job) => normalizeStatus(job.status) === "pending").length;
+        const bCount = jobsB.filter((job) => normalizeStatus(job.status) === "pending").length;
+        if (aCount !== bCount) return bCount - aCount;
+        return clientA.localeCompare(clientB);
+      }
+
+      case "newest": {
+        const newestA = [...jobsA].sort((a, b) => getJobDate(b) - getJobDate(a))[0];
+        const newestB = [...jobsB].sort((a, b) => getJobDate(b) - getJobDate(a))[0];
+        return getJobDate(newestB) - getJobDate(newestA);
+      }
+
+      case "oldest":
+      default: {
+        const oldestA = [...jobsA].sort((a, b) => getJobDate(a) - getJobDate(b))[0];
+        const oldestB = [...jobsB].sort((a, b) => getJobDate(a) - getJobDate(b))[0];
+        return getJobDate(oldestA) - getJobDate(oldestB);
+      }
+    }
+  };
+
   useEffect(() => {
     fetchJobs();
   }, []);
@@ -97,6 +225,12 @@ export default function JobsManager() {
 
     if (jobTypeFilter !== "all") {
       filtered = filtered.filter((job) => job.jobType === jobTypeFilter);
+    }
+
+    if (statusFilter !== "all") {
+      filtered = filtered.filter(
+        (job) => normalizeStatus(job.status) === normalizeStatus(statusFilter)
+      );
     }
 
     const search = searchTerm.trim().toLowerCase();
@@ -118,41 +252,9 @@ export default function JobsManager() {
       });
     }
 
-    const sorted = filtered.sort((a, b) => {
-      switch (sortOrder) {
-        case "newest": {
-          const dateA = a.createdAt?.toDate ? a.createdAt.toDate() : new Date(a.createdAt || a.startDate || 0);
-          const dateB = b.createdAt?.toDate ? b.createdAt.toDate() : new Date(b.createdAt || b.startDate || 0);
-          return dateB - dateA;
-        }
-        case "oldest": {
-          const dateA2 = a.createdAt?.toDate ? a.createdAt.toDate() : new Date(a.createdAt || a.startDate || 0);
-          const dateB2 = b.createdAt?.toDate ? b.createdAt.toDate() : new Date(b.createdAt || b.startDate || 0);
-          return dateA2 - dateB2;
-        }
-        case "name-asc":
-          return (a.clientName || "").localeCompare(b.clientName || "");
-        case "name-desc":
-          return (b.clientName || "").localeCompare(a.clientName || "");
-        case "status-active":
-          if (a.status === "Active" && b.status !== "Active") return -1;
-          if (a.status !== "Active" && b.status === "Active") return 1;
-          return 0;
-        case "status-completed":
-          if (a.status === "Completed" && b.status !== "Completed") return -1;
-          if (a.status !== "Completed" && b.status === "Completed") return 1;
-          return 0;
-        case "status-pending":
-          if (a.status === "Pending" && b.status !== "Pending") return -1;
-          if (a.status !== "Pending" && b.status === "Pending") return 1;
-          return 0;
-        default:
-          return 0;
-      }
-    });
-
+    const sorted = [...filtered].sort((a, b) => compareJobs(a, b, sortOrder));
     setSortedJobs(sorted);
-  }, [jobs, sortOrder, jobTypeFilter, searchTerm]);
+  }, [jobs, sortOrder, jobTypeFilter, statusFilter, searchTerm]);
 
   const fetchJobs = async () => {
     try {
@@ -565,13 +667,15 @@ export default function JobsManager() {
   };
 
   const getStatusColor = (status) => {
-    switch ((status || "").toLowerCase()) {
+    switch (normalizeStatus(status)) {
       case "active":
         return "success";
       case "pending":
         return "warning";
       case "completed":
         return "info";
+      case "cancelled":
+        return "error";
       default:
         return "default";
     }
@@ -626,6 +730,22 @@ export default function JobsManager() {
             </Select>
           </FormControl>
 
+          <FormControl size="small" sx={{ minWidth: 180 }}>
+            <InputLabel id="status-filter-label">Filter by Status</InputLabel>
+            <Select
+              labelId="status-filter-label"
+              value={statusFilter}
+              label="Filter by Status"
+              onChange={(e) => setStatusFilter(e.target.value)}
+            >
+              <MenuItem value="all">All Statuses</MenuItem>
+              <MenuItem value="Active">Active</MenuItem>
+              <MenuItem value="Pending">Pending</MenuItem>
+              <MenuItem value="Completed">Completed</MenuItem>
+              <MenuItem value="Cancelled">Cancelled</MenuItem>
+            </Select>
+          </FormControl>
+
           <FormControl size="small" sx={{ minWidth: 200 }}>
             <InputLabel id="sort-label">
               <SortIcon sx={{ fontSize: 18, mr: 0.5, verticalAlign: "middle" }} />
@@ -673,8 +793,8 @@ export default function JobsManager() {
           <Typography variant="body2" color="text.secondary">
             {searchTerm
               ? "No jobs match your search."
-              : jobTypeFilter !== "all"
-                ? `No ${jobTypeFilter} jobs found. Try changing the filter.`
+              : jobTypeFilter !== "all" || statusFilter !== "all"
+                ? "No jobs found for the selected filters. Try changing the filters."
                 : "Jobs will appear here after you create them"}
           </Typography>
         </Box>
@@ -687,12 +807,16 @@ export default function JobsManager() {
         }, {});
 
         return Object.entries(groups)
-          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([clientName, clientJobs]) => [
+            clientName,
+            [...clientJobs].sort((a, b) => compareJobs(a, b, sortOrder)),
+          ])
+          .sort((a, b) => compareClientGroups(a, b, sortOrder))
           .map(([clientName, clientJobs]) => {
             const isExpanded = expandedClients[clientName] !== false;
             const hasMultiple = clientJobs.length > 1;
-            const activeCount = clientJobs.filter((j) => j.status === "Active").length;
-            const pendingCount = clientJobs.filter((j) => j.status === "Pending").length;
+            const activeCount = clientJobs.filter((j) => normalizeStatus(j.status) === "active").length;
+            const pendingCount = clientJobs.filter((j) => normalizeStatus(j.status) === "pending").length;
 
             return (
               <Accordion
@@ -740,6 +864,9 @@ export default function JobsManager() {
                           })()}`
                         : null;
 
+                      const ageDays = getJobAgeDays(job);
+                      const staleLevel = getStaleLevel(job);
+
                       return (
                         <Card key={job.id} sx={{ boxShadow: 1, border: hasMultiple ? "1px solid #e0e0e0" : "none" }}>
                           <CardContent>
@@ -753,7 +880,24 @@ export default function JobsManager() {
                                 <Typography variant="body1" fontWeight="bold">
                                   {job.jobType || "General Service"}
                                 </Typography>
+
+                                {job.createdAt && (
+                                  <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
+                                    Created: {formatJobDate(job.createdAt)}
+                                    {ageDays != null ? ` • ${ageDays} day${ageDays === 1 ? "" : "s"} old` : ""}
+                                  </Typography>
+                                )}
+
+                                <Box sx={{ display: "flex", gap: 1, mt: 1, flexWrap: "wrap" }}>
+                                  {staleLevel === "stale" && (
+                                    <Chip label="30+ days old" size="small" color="warning" variant="outlined" />
+                                  )}
+                                  {staleLevel === "very-stale" && (
+                                    <Chip label="90+ days old" size="small" color="error" variant="outlined" />
+                                  )}
+                                </Box>
                               </Box>
+
                               <Chip label={job.status || "Pending"} color={getStatusColor(job.status)} size="small" />
                             </Box>
 
