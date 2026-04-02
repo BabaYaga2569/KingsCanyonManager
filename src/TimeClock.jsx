@@ -158,17 +158,26 @@ export default function TimeClock() {
       await loadEmployeeInfo();
 
       const jobsSnap = await getDocs(collection(db, "jobs"));
-      const jobsData = jobsSnap.docs.map((d) => {
-        const data = d.data();
-        const clientName = data.clientName || data.customerName || "Unknown Client";
-
-        return {
-          id: d.id,
-          ...data,
-          clientName,
-          displayName: clientName,
-        };
-      });
+      const jobsData = jobsSnap.docs
+        .map((d) => {
+          const data = d.data();
+          const clientName = data.clientName || data.customerName || "Unknown Client";
+          const addressParts = [data.address, data.city, data.state].filter(Boolean);
+          const address = addressParts.join(", ");
+          return {
+            id: d.id,
+            ...data,
+            clientName,
+            address,
+            displayName: clientName,
+          };
+        })
+        .filter((j) => {
+          const status = (j.status || "").toLowerCase();
+          // Only Active jobs show in clock-in list
+          return status === "active";
+        })
+        .sort((a, b) => a.clientName.localeCompare(b.clientName));
 
       setJobs(jobsData);
       await checkExistingEntry();
@@ -909,7 +918,16 @@ export default function TimeClock() {
                 <MenuItem value="">-- Select a Job --</MenuItem>
                 {jobs.map((job) => (
                   <MenuItem key={job.id} value={job.id}>
-                    {job.displayName}
+                    <Box>
+                      <Typography variant="body2" sx={{ fontWeight: 600, lineHeight: 1.3 }}>
+                        {job.displayName}
+                      </Typography>
+                      {job.address && (
+                        <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1.2 }}>
+                          {job.address}
+                        </Typography>
+                      )}
+                    </Box>
                   </MenuItem>
                 ))}
               </TextField>

@@ -51,6 +51,9 @@ import DeleteIcon from "@mui/icons-material/Delete";
 import EditIcon from "@mui/icons-material/Edit";
 import CameraAltIcon from "@mui/icons-material/CameraAlt";
 import UploadFileIcon from "@mui/icons-material/UploadFile";
+import AddPhotoAlternateIcon from "@mui/icons-material/AddPhotoAlternate";
+import CloseIcon from "@mui/icons-material/Close";
+import AttachMoneyIcon from "@mui/icons-material/AttachMoney";
 import VisibilityIcon from "@mui/icons-material/Visibility";
 import FilterListIcon from "@mui/icons-material/FilterList";
 import SortIcon from "@mui/icons-material/Sort";
@@ -64,112 +67,92 @@ import { markAsViewed } from './useNotificationCounts';
 // Initialize Firebase Functions
 const functions = getFunctions();
 
-// AI Receipt Scanner using Firebase Cloud Function
-const scanReceipt = async (file) => {
+// AI Receipt Scanner using Firebase Cloud Function (multi-image support)
+const scanReceipt = async (files) => {
+  // files = array of File objects
   console.log("=".repeat(80));
-  console.log("ðŸ” RECEIPT SCAN STARTED (Cloud Function)");
+  console.log("📸 MULTI-IMAGE RECEIPT SCAN STARTED");
   console.log("=".repeat(80));
-  console.log("ðŸ“ File:", file.name);
-  console.log("ðŸ“Š Size:", (file.size / 1024).toFixed(2), "KB");
-  console.log("ðŸŽ¨ Type:", file.type);
-  
+  console.log(`📋 Photos queued: ${files.length}`);
+
   return new Promise(async (resolve, reject) => {
     try {
-      // Upload to Firebase Storage first
-      const timestamp = Date.now();
-      const fileName = `receipt_${timestamp}_${file.name}`;
-      const storageRef = ref(storage, `receipts/expenses/${fileName}`);
-      
-      console.log("â˜ï¸ Uploading to Firebase Storage...");
-      await uploadBytes(storageRef, file);
-      const receiptUrl = await getDownloadURL(storageRef);
-      console.log("âœ… Firebase upload complete");
-      console.log("ðŸ”— Receipt URL:", receiptUrl);
-      
-      // Convert file to base64
-      const reader = new FileReader();
-      reader.onload = async (e) => {
-        console.log("ðŸ“„ File read successfully");
-        const base64Image = e.target.result.split(',')[1];
-        console.log("ðŸ“¸ Base64 length:", base64Image.length, "characters");
-        
-        try {
-          console.log("-".repeat(80));
-          console.log("â˜ï¸ CALLING FIREBASE CLOUD FUNCTION");
-          console.log("-".repeat(80));
-          
-          // Call Firebase Cloud Function
-          const scanReceiptFunction = httpsCallable(functions, 'scanReceipt');
-          
-          console.log("ðŸ“¤ Sending to Cloud Function...");
-          const result = await scanReceiptFunction({ image: base64Image });
-          
-          console.log("âœ… Cloud Function returned successfully");
-          console.log("ðŸ“¦ Result:", JSON.stringify(result.data, null, 2));
-          
-          const data = result.data;
-          
-          const finalResult = {
-            vendor: data.vendor || "Unknown Vendor",
-            amount: data.amount || 0,
-            subtotal: data.subtotal || 0,
-            tax: data.tax || 0,
-            date: data.date || moment().format("YYYY-MM-DD"),
-            receiptNumber: data.receiptNumber || "",
-            category: data.category || "materials",
-            lineItems: data.lineItems || [],
-            receiptUrl: receiptUrl,
-            scanSuccess: true,
-            rawText: data.rawText, // For debugging
-          };
-          
-          console.log("=".repeat(80));
-          console.log("🎉 SCAN COMPLETE - SUCCESS!");
-          console.log("=".repeat(80));
-          console.log("Final result:", JSON.stringify(finalResult, null, 2));
-          
-          resolve(finalResult);
-          
-        } catch (functionError) {
-          console.error("=".repeat(80));
-          console.error("âŒ CLOUD FUNCTION CALL FAILED");
-          console.error("=".repeat(80));
-          console.error("Error:", functionError);
-          console.error("Message:", functionError.message);
-          console.error("Code:", functionError.code);
-          console.error("Details:", functionError.details);
-          
-          // Return with error but still include receipt URL
-          resolve({
-            vendor: "",
-            amount: "",
-            subtotal: "",
-            tax: "",
-            date: moment().format("YYYY-MM-DD"),
-            receiptNumber: "",
-            category: "materials",
-            lineItems: [],
-            receiptUrl: receiptUrl,
-            scanSuccess: false,
-            scanError: functionError.message || "Cloud Function failed",
-            errorCode: functionError.code,
-          });
-        }
+      // Upload all files to Firebase Storage
+      const receiptUrls = [];
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        const timestamp = Date.now();
+        const fileName = `receipt_${timestamp}_${i}_${file.name}`;
+        const storageRef = ref(storage, `receipts/expenses/${fileName}`);
+        console.log(`☁️ Uploading photo ${i + 1}/${files.length}...`);
+        await uploadBytes(storageRef, file);
+        const url = await getDownloadURL(storageRef);
+        receiptUrls.push(url);
+        console.log(`✅ Photo ${i + 1} uploaded`);
+      }
+
+      // Convert all files to base64
+      const base64Images = await Promise.all(
+        files.map(
+          (file) =>
+            new Promise((res, rej) => {
+              const reader = new FileReader();
+              reader.onload = (e) => res(e.target.result.split(",")[1]);
+              reader.onerror = () => rej(new Error("Failed to read file"));
+              reader.readAsDataURL(file);
+            })
+        )
+      );
+
+      console.log(`📸 All ${files.length} photos converted to base64`);
+      console.log("☁️ CALLING FIREBASE CLOUD FUNCTION (multi-image)");
+
+      const scanReceiptFunction = httpsCallable(functions, "scanReceipt");
+      const result = await scanReceiptFunction({ images: base64Images });
+
+      console.log("✅ Cloud Function returned successfully");
+
+      const data = result.data;
+
+      const finalResult = {
+        vendor: data.vendor || "Unknown Vendor",
+        amount: data.amount || 0,
+        subtotal: data.subtotal || 0,
+        tax: data.tax || 0,
+        date: data.date || moment().format("YYYY-MM-DD"),
+        receiptNumber: data.receiptNumber || "",
+        category: data.category || "materials",
+        lineItems: data.lineItems || [],
+        receiptUrl: receiptUrls[0],
+        receiptUrls: receiptUrls,
+        scanSuccess: true,
+        rawText: data.rawText,
+        photoCount: files.length,
       };
-      
-      reader.onerror = () => {
-        console.error("âŒ File read failed");
-        reject(new Error("Failed to read file"));
-      };
-      
-      reader.readAsDataURL(file);
-      
+
+      console.log("🎉 MULTI-IMAGE SCAN COMPLETE!");
+      resolve(finalResult);
     } catch (error) {
-      console.error("âŒ CRITICAL ERROR:", error);
-      reject(error);
+      console.error("❌ SCAN FAILED:", error);
+      resolve({
+        vendor: "",
+        amount: "",
+        subtotal: "",
+        tax: "",
+        date: moment().format("YYYY-MM-DD"),
+        receiptNumber: "",
+        category: "materials",
+        lineItems: [],
+        receiptUrl: null,
+        receiptUrls: [],
+        scanSuccess: false,
+        scanError: error.message || "Scan failed",
+        errorCode: error.code,
+      });
     }
   });
 };
+
 
 export default function ExpensesManager() {
   const theme = useTheme();
@@ -209,7 +192,11 @@ export default function ExpensesManager() {
     receiptUrl: "",
     receiptFileName: "",
     lineItems: [],
+    billableToClient: false,
   });
+
+  const [pendingReceiptFiles, setPendingReceiptFiles] = useState([]);
+  const [pendingReceiptPreviews, setPendingReceiptPreviews] = useState([]);
 
   const [selectedYear, setSelectedYear] = useState("all");
   const [filters, setFilters] = useState({
@@ -338,7 +325,79 @@ export default function ExpensesManager() {
     setExpandedExpenseId(prev => prev === id ? null : id);
   };
 
-  // Receipt Scanner Handler
+  // Multi-scan receipt handlers
+  // Step 1: user picks a photo — add to queue, don't scan yet
+  const handleAddReceiptPhoto = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const previewUrl = URL.createObjectURL(file);
+    setPendingReceiptFiles((prev) => [...prev, file]);
+    setPendingReceiptPreviews((prev) => [...prev, previewUrl]);
+    e.target.value = "";
+  };
+
+  // Remove a queued photo
+  const handleRemovePendingPhoto = (index) => {
+    URL.revokeObjectURL(pendingReceiptPreviews[index]);
+    setPendingReceiptFiles((prev) => prev.filter((_, i) => i !== index));
+    setPendingReceiptPreviews((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  // Step 2: fire the actual scan with all queued photos
+  const handleScanQueue = async () => {
+    if (pendingReceiptFiles.length === 0) return;
+    setScanning(true);
+    setScanDialogOpen(true);
+    setDebugInfo({
+      status: "Scanning...",
+      fileName: `${pendingReceiptFiles.length} photo(s)`,
+      fileSize: pendingReceiptFiles.map(f => (f.size/1024).toFixed(0)+"KB").join(', '),
+      timestamp: new Date().toISOString(),
+    });
+    try {
+      const scannedInfo = await scanReceipt(pendingReceiptFiles);
+      setScannedData(scannedInfo);
+      setDebugInfo({
+        status: scannedInfo.scanSuccess ? "✅ Success" : "❌ Failed",
+        fileName: `${pendingReceiptFiles.length} photo(s)`,
+        fileSize: pendingReceiptFiles.map(f => (f.size/1024).toFixed(0)+"KB").join(', '),
+        vendor: scannedInfo.vendor,
+        amount: scannedInfo.amount,
+        itemCount: scannedInfo.lineItems?.length || 0,
+        error: scannedInfo.scanError || null,
+        timestamp: new Date().toISOString(),
+      });
+      // Clear queue
+      pendingReceiptPreviews.forEach((url) => URL.revokeObjectURL(url));
+      setPendingReceiptFiles([]);
+      setPendingReceiptPreviews([]);
+      setExpenseForm((prev) => ({
+        ...prev,
+        vendor: scannedInfo.vendor || "",
+        category: scannedInfo.category?.toLowerCase() || "materials",
+        amount: scannedInfo.amount || "",
+        date: scannedInfo.date || moment().format("YYYY-MM-DD"),
+        description: scannedInfo.description || "",
+        receiptUrl: scannedInfo.receiptUrl || "",
+        receiptFile: pendingReceiptFiles[0] || null,
+        receiptFileName: pendingReceiptFiles[0]?.name || "",
+        lineItems: scannedInfo.lineItems || [],
+      }));
+      if (scannedInfo.lineItems && scannedInfo.lineItems.length > 0) {
+        setShowItemizedView(true);
+      }
+      setAddExpenseOpen(true);
+    } catch (error) {
+      console.error("Scan error:", error);
+      setDebugInfo({ status: "❌ Error", error: error.message, timestamp: new Date().toISOString() });
+      Swal.fire({ icon: "error", title: "Scan Failed", text: error.message || "Could not scan receipt." });
+    } finally {
+      setScanning(false);
+      setScanDialogOpen(false);
+    }
+  };
+
+  // Legacy single-file handler kept for compatibility
   const handleScanReceipt = async (event) => {
     const file = event.target.files[0];
     if (!file) return;
@@ -463,6 +522,7 @@ export default function ExpensesManager() {
         jobName: expenseForm.jobName || "General Business Expense",
         customerId: null,
         taxDeductible: expenseForm.taxDeductible,
+        billableToClient: expenseForm.billableToClient || false,
         paymentMethod: expenseForm.paymentMethod,
         notes: expenseForm.notes,
         receiptUrl: receiptUrl,
@@ -528,6 +588,7 @@ export default function ExpensesManager() {
         receiptUrl: "",
         receiptFileName: "",
         lineItems: [],
+        billableToClient: false,
       });
       setScannedData(null);
       setUploading(false);
@@ -557,6 +618,7 @@ export default function ExpensesManager() {
       jobId: expense.jobId || "",
       jobName: expense.jobName || "",
       taxDeductible: expense.taxDeductible !== false,
+      billableToClient: expense.billableToClient || false,
       paymentMethod: expense.paymentMethod || "credit_card",
       notes: expense.notes || "",
       receiptFile: null,
@@ -607,6 +669,7 @@ export default function ExpensesManager() {
         jobName: expenseForm.jobName || "General Business Expense",
         customerId: null,
         taxDeductible: expenseForm.taxDeductible,
+        billableToClient: expenseForm.billableToClient || false,
         paymentMethod: expenseForm.paymentMethod,
         notes: expenseForm.notes,
         receiptUrl: receiptUrl,
@@ -788,6 +851,10 @@ export default function ExpensesManager() {
   const taxDeductibleTotal = filteredExpenses
     .filter((e) => e.taxDeductible)
     .reduce((sum, e) => sum + parseFloat(e.amount || 0), 0);
+  const clientBillableTotal = filteredExpenses
+    .filter((e) => e.billableToClient)
+    .reduce((sum, e) => sum + parseFloat(e.amount || 0), 0);
+  const kclOverheadTotal = totalExpenses - clientBillableTotal;
 
   if (loading) {
     return (
@@ -881,22 +948,36 @@ export default function ExpensesManager() {
             {isMobile ? "CSV" : "Export CSV"}
           </Button>
           
-          <Button
-            variant="contained"
-            startIcon={<CameraAltIcon />}
-            component="label"
-            disabled={scanning}
-            color="primary"
-          >
-            {scanning ? "Scanning..." : isMobile ? "📸 Scan" : "📸 Scan Receipt"}
-            <input
-              type="file"
-              hidden
-              accept="image/*"
-              capture="environment"
-              onChange={handleScanReceipt}
-            />
-          </Button>
+          {/* Photo queue — shown when at least one photo is staged */}
+          {pendingReceiptFiles.length > 0 && (
+            <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap", border: "1px solid", borderColor: "primary.main", borderRadius: 2, p: 1, bgcolor: "action.hover" }}>
+              {pendingReceiptPreviews.map((src, idx) => (
+                <Box key={idx} sx={{ position: "relative", display: "inline-flex" }}>
+                  <Box component="img" src={src} alt={`Receipt ${idx + 1}`}
+                    sx={{ width: 52, height: 52, objectFit: "cover", borderRadius: 1, border: "2px solid", borderColor: "primary.main" }} />
+                  <IconButton size="small" onClick={() => handleRemovePendingPhoto(idx)}
+                    sx={{ position: "absolute", top: -8, right: -8, bgcolor: "error.main", color: "white", width: 18, height: 18, "&:hover": { bgcolor: "error.dark" } }}>
+                    <CloseIcon sx={{ fontSize: 12 }} />
+                  </IconButton>
+                </Box>
+              ))}
+              <Button variant="outlined" component="label" size="small" startIcon={<AddPhotoAlternateIcon />} sx={{ minWidth: 0, px: 1 }}>
+                +
+                <input type="file" hidden accept="image/*" capture="environment" onChange={handleAddReceiptPhoto} />
+              </Button>
+              <Button variant="contained" color="primary" size="small" onClick={handleScanQueue} disabled={scanning} startIcon={<CameraAltIcon />}>
+                {scanning ? "Scanning..." : `Scan ${pendingReceiptFiles.length} Photo${pendingReceiptFiles.length > 1 ? "s" : ""}`}
+              </Button>
+            </Box>
+          )}
+
+          {/* First photo button — only when queue is empty */}
+          {pendingReceiptFiles.length === 0 && (
+            <Button variant="contained" startIcon={<CameraAltIcon />} component="label" disabled={scanning} color="primary">
+              {scanning ? "Scanning..." : isMobile ? "📸 Scan" : "📸 Scan Receipt"}
+              <input type="file" hidden accept="image/*" capture="environment" onChange={handleAddReceiptPhoto} />
+            </Button>
+          )}
           
           <Button
             variant="outlined"
@@ -910,7 +991,7 @@ export default function ExpensesManager() {
 
       {/* Summary Cards */}
       <Grid container spacing={3} sx={{ mb: 3 }}>
-        <Grid item xs={12} md={4}>
+        <Grid item xs={12} md={3}>
           <Card>
             <CardContent>
               <Typography variant="subtitle2" color="text.secondary">
@@ -926,33 +1007,49 @@ export default function ExpensesManager() {
           </Card>
         </Grid>
 
-        <Grid item xs={12} md={4}>
+        <Grid item xs={12} md={3}>
           <Card>
             <CardContent>
               <Typography variant="subtitle2" color="text.secondary">
-                Tax Deductible
+                KCL Overhead
               </Typography>
-              <Typography variant="h4" color="success.main" sx={{ my: 1 }}>
-                ${taxDeductibleTotal.toFixed(2)}
+              <Typography variant="h4" color="warning.main" sx={{ my: 1 }}>
+                ${kclOverheadTotal.toFixed(2)}
               </Typography>
               <Typography variant="body2" color="text.secondary">
-                {filteredExpenses.filter((e) => e.taxDeductible).length} expenses
+                Business expenses (reduces profit)
               </Typography>
             </CardContent>
           </Card>
         </Grid>
 
-        <Grid item xs={12} md={4}>
+        <Grid item xs={12} md={3}>
+          <Card sx={{ border: "2px solid", borderColor: "success.main" }}>
+            <CardContent>
+              <Typography variant="subtitle2" color="success.main" sx={{ fontWeight: 700 }}>
+                Client Charges (Pass-Through)
+              </Typography>
+              <Typography variant="h4" color="success.main" sx={{ my: 1 }}>
+                ${clientBillableTotal.toFixed(2)}
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                {filteredExpenses.filter((e) => e.billableToClient).length} items — billed to client
+              </Typography>
+            </CardContent>
+          </Card>
+        </Grid>
+
+        <Grid item xs={12} md={3}>
           <Card>
             <CardContent>
               <Typography variant="subtitle2" color="text.secondary">
-                With Receipts
+                Tax Deductible
               </Typography>
               <Typography variant="h4" color="primary" sx={{ my: 1 }}>
-                {filteredExpenses.filter((e) => e.receiptUrl).length}
+                ${taxDeductibleTotal.toFixed(2)}
               </Typography>
               <Typography variant="body2" color="text.secondary">
-                of {filteredExpenses.length} total
+                {filteredExpenses.filter((e) => e.taxDeductible).length} expenses
               </Typography>
             </CardContent>
           </Card>
@@ -1091,6 +1188,9 @@ export default function ExpensesManager() {
                     </Typography>
                     <Box sx={{ mt: 1, display: "flex", gap: 1, flexWrap: "wrap" }}>
                       <Chip label={expense.category} size="small" />
+                      {expense.billableToClient && (
+                        <Chip icon={<AttachMoneyIcon />} label="Client Charge" size="small" sx={{ bgcolor: "#e65100", color: "white", fontWeight: 700 }} />
+                      )}
                       {expense.taxDeductible && (
                         <Chip label="Tax Deductible" color="success" size="small" />
                       )}
@@ -1214,7 +1314,13 @@ export default function ExpensesManager() {
                         </TableCell>
                         <TableCell sx={{ fontWeight: 600 }}>{expense.vendor}</TableCell>
                         <TableCell>
-                          <Chip label={expense.category} size="small" />
+                          <Box sx={{ display: "flex", flexDirection: "column", gap: 0.5 }}>
+                            <Chip label={expense.category} size="small" />
+                            {expense.billableToClient && (
+                              <Chip icon={<AttachMoneyIcon />} label="Client Charge" size="small"
+                                sx={{ bgcolor: "#e65100", color: "white", fontWeight: 700, fontSize: "0.7rem" }} />
+                            )}
+                          </Box>
                         </TableCell>
                         <TableCell sx={{ maxWidth: 140 }}>
                           <Typography variant="body2" noWrap title={expense.jobName}>
@@ -1327,10 +1433,10 @@ export default function ExpensesManager() {
           <CircularProgress size={60} sx={{ mb: 2 }} />
           <Typography variant="h6">Scanning Receipt...</Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-            Google Cloud Vision is analyzing the receipt
+            Claude AI is analyzing {pendingReceiptFiles.length > 1 ? `${pendingReceiptFiles.length} receipt photos` : "your receipt"}
           </Typography>
           <Typography variant="caption" color="text.secondary" sx={{ mt: 2, display: 'block' }}>
-            This may take 5-10 seconds...
+            This may take 10-20 seconds...
           </Typography>
         </DialogContent>
       </Dialog>
@@ -1618,6 +1724,40 @@ export default function ExpensesManager() {
                 }
                 label="Tax Deductible"
               />
+            </Grid>
+
+            <Grid item xs={12}>
+              <Box sx={{ border: "2px solid", borderColor: expenseForm.billableToClient ? "#e65100" : "divider", borderRadius: 2, p: 2, bgcolor: expenseForm.billableToClient ? "#fff3e0" : "transparent", transition: "all 0.2s" }}>
+                <FormControlLabel
+                  control={
+                    <Checkbox
+                      checked={expenseForm.billableToClient}
+                      onChange={(e) => setExpenseForm({ ...expenseForm, billableToClient: e.target.checked })}
+                      sx={{ color: "#e65100", "&.Mui-checked": { color: "#e65100" } }}
+                    />
+                  }
+                  label={
+                    <Box>
+                      <Typography variant="body2" sx={{ fontWeight: 700, color: expenseForm.billableToClient ? "#e65100" : "inherit" }}>
+                        💰 Bill to Client (Pass-Through Cost)
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        Check this if the client owes you back for these materials (e.g. plants, pavers, supplies purchased for their job)
+                      </Typography>
+                    </Box>
+                  }
+                />
+                {expenseForm.billableToClient && (
+                  <Alert severity="warning" sx={{ mt: 1 }} icon={<AttachMoneyIcon />}>
+                    <Typography variant="body2">
+                      <strong>This expense will NOT reduce KCL profit</strong> — it is tracked as a client charge and will appear as a line item on their invoice.
+                      {!expenseForm.jobId && (
+                        <><br/><strong>⚠️ Link this to a job above so it appears on the correct invoice.</strong></>
+                      )}
+                    </Typography>
+                  </Alert>
+                )}
+              </Box>
             </Grid>
 
             <Grid item xs={12}>

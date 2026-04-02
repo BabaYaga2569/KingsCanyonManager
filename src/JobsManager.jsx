@@ -5,6 +5,7 @@ import {
   updateDoc,
   deleteDoc,
   doc,
+  serverTimestamp,
 } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { db, storage } from "./firebase";
@@ -45,6 +46,8 @@ import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import PersonIcon from "@mui/icons-material/Person";
 import DownloadIcon from "@mui/icons-material/Download";
 import SearchIcon from "@mui/icons-material/Search";
+import ArchiveIcon from "@mui/icons-material/Archive";
+import UnarchiveIcon from "@mui/icons-material/Unarchive";
 import { exportJobsToExcel, exportJobsToCSV } from "./utils/kclExportUtils";
 import Swal from "sweetalert2";
 import { markAsViewed } from "./useNotificationCounts";
@@ -56,6 +59,10 @@ export default function JobsManager() {
   const [sortOrder, setSortOrder] = useState("oldest");
   const [jobTypeFilter, setJobTypeFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [invoiceMap, setInvoiceMap] = useState({});   // jobId -> invoice
+  const [paymentMap, setPaymentMap] = useState({});   // invoiceId -> {totalPaid, balance}
+  const [customerMap, setCustomerMap] = useState({});
+  const [archiveFilter, setArchiveFilter] = useState("active");
   const [searchTerm, setSearchTerm] = useState("");
   const [loading, setLoading] = useState(true);
   const [expandedClients, setExpandedClients] = useState({});
@@ -86,6 +93,8 @@ export default function JobsManager() {
   const galleryInputRef = useRef(null);
 
   const normalizeStatus = (status) => (status || "").trim().toLowerCase();
+
+  const isArchived = (job) => job?.archived === true;
 
   const getJobDate = (job) => {
     const raw = job?.createdAt || job?.startDate || 0;
@@ -223,6 +232,12 @@ export default function JobsManager() {
   useEffect(() => {
     let filtered = [...jobs];
 
+    if (archiveFilter === "active") {
+      filtered = filtered.filter((job) => !isArchived(job));
+    } else if (archiveFilter === "archived") {
+      filtered = filtered.filter((job) => isArchived(job));
+    }
+
     if (jobTypeFilter !== "all") {
       filtered = filtered.filter((job) => job.jobType === jobTypeFilter);
     }
@@ -254,7 +269,7 @@ export default function JobsManager() {
 
     const sorted = [...filtered].sort((a, b) => compareJobs(a, b, sortOrder));
     setSortedJobs(sorted);
-  }, [jobs, sortOrder, jobTypeFilter, statusFilter, searchTerm]);
+  }, [jobs, sortOrder, jobTypeFilter, statusFilter, archiveFilter, searchTerm]);
 
   const fetchJobs = async () => {
     try {
@@ -270,10 +285,103 @@ export default function JobsManager() {
         .map((d) => ({ id: d.id, ...d.data() }))
         .filter((user) => user.active !== false);
       setEmployees(activeEmployees);
+
+      // Load customers for address display on job cards
+      try {
+        const customersSnap = await getDocs(collection(db, "customers"));
+        const custMap = {};
+        customersSnap.docs.forEach(d => {
+          const c = d.data();
+          const addressParts = [c.address, c.city, c.state, c.zip].filter(Boolean);
+          custMap[d.id] = { address: addressParts.join(", ") };
+        });
+        setCustomerMap(custMap);
+      } catch (e) {
+        console.warn("Could not load customers:", e);
+      }
+
+      // Load invoices and payments to show payment status on job cards
+      try {
+        const invoicesSnap = await getDocs(collection(db, "invoices"));
+        const allInvoices = invoicesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+        const invMap = {};
+        allInvoices.forEach(inv => { if (inv.jobId) invMap[inv.jobId] = inv; });
+        setInvoiceMap(invMap);
+
+        const paymentsSnap = await getDocs(collection(db, "payments"));
+        const allPayments = paymentsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+        const pmtMap = {};
+        allInvoices.forEach(inv => {
+          const invPayments = allPayments.filter(p => p.invoiceId === inv.id);
+          const totalPaid = invPayments.reduce((sum, p) => sum + parseFloat(p.amount || 0), 0);
+          const invoiceTotal = parseFloat(inv.total || inv.amount || 0);
+          pmtMap[inv.id] = {
+            totalPaid,
+            balance: Math.max(0, invoiceTotal - totalPaid),
+            isPaid: totalPaid >= invoiceTotal && invoiceTotal > 0,
+            paymentCount: invPayments.length,
+          };
+        });
+        setPaymentMap(pmtMap);
+      } catch (e) {
+        console.warn("Could not load invoices/payments for job cards:", e);
+      }
     } catch (error) {
       console.error("Error fetching jobs:", error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleArchiveJob = async (job) => {
+    const result = await Swal.fire({
+      title: `Archive ${job.clientName}'s job?`,
+      text: "This job will be hidden from the default jobs view, but not deleted.",
+      icon: "question",
+      showCancelButton: true,
+      confirmButtonText: "Archive",
+      cancelButtonText: "Cancel",
+      confirmButtonColor: "#ed6c02",
+    });
+
+    if (!result.isConfirmed) return;
+
+    try {
+      await updateDoc(doc(db, "jobs", job.id), {
+        archived: true,
+        archivedAt: serverTimestamp(),
+      });
+
+      setJobs((prev) =>
+        prev.map((j) =>
+          j.id === job.id ? { ...j, archived: true, archivedAt: new Date() } : j
+        )
+      );
+
+      Swal.fire("Archived!", "Job has been archived.", "success");
+    } catch (error) {
+      console.error("Error archiving job:", error);
+      Swal.fire("Error", "Failed to archive job.", "error");
+    }
+  };
+
+  const handleRestoreJob = async (job) => {
+    try {
+      await updateDoc(doc(db, "jobs", job.id), {
+        archived: false,
+        archivedAt: null,
+      });
+
+      setJobs((prev) =>
+        prev.map((j) =>
+          j.id === job.id ? { ...j, archived: false, archivedAt: null } : j
+        )
+      );
+
+      Swal.fire("Restored!", "Job has been restored.", "success");
+    } catch (error) {
+      console.error("Error restoring job:", error);
+      Swal.fire("Error", "Failed to restore job.", "error");
     }
   };
 
@@ -713,6 +821,20 @@ export default function JobsManager() {
           />
 
           <FormControl size="small" sx={{ minWidth: 180 }}>
+            <InputLabel id="archive-filter-label">Archive View</InputLabel>
+            <Select
+              labelId="archive-filter-label"
+              value={archiveFilter}
+              label="Archive View"
+              onChange={(e) => setArchiveFilter(e.target.value)}
+            >
+              <MenuItem value="active">Active Jobs</MenuItem>
+              <MenuItem value="archived">Archived Jobs</MenuItem>
+              <MenuItem value="all">All Jobs</MenuItem>
+            </Select>
+          </FormControl>
+
+          <FormControl size="small" sx={{ minWidth: 180 }}>
             <InputLabel id="filter-label">
               <FilterListIcon sx={{ fontSize: 18, mr: 0.5, verticalAlign: "middle" }} />
               Filter by Type
@@ -793,7 +915,7 @@ export default function JobsManager() {
           <Typography variant="body2" color="text.secondary">
             {searchTerm
               ? "No jobs match your search."
-              : jobTypeFilter !== "all" || statusFilter !== "all"
+              : jobTypeFilter !== "all" || statusFilter !== "all" || archiveFilter !== "active"
                 ? "No jobs found for the selected filters. Try changing the filters."
                 : "Jobs will appear here after you create them"}
           </Typography>
@@ -866,9 +988,10 @@ export default function JobsManager() {
 
                       const ageDays = getJobAgeDays(job);
                       const staleLevel = getStaleLevel(job);
+                      const archived = isArchived(job);
 
                       return (
-                        <Card key={job.id} sx={{ boxShadow: 1, border: hasMultiple ? "1px solid #e0e0e0" : "none" }}>
+                        <Card key={job.id} sx={{ boxShadow: 1, border: hasMultiple ? "1px solid #e0e0e0" : "none", opacity: archived ? 0.88 : 1 }}>
                           <CardContent>
                             <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "start", mb: 1.5 }}>
                               <Box>
@@ -889,6 +1012,9 @@ export default function JobsManager() {
                                 )}
 
                                 <Box sx={{ display: "flex", gap: 1, mt: 1, flexWrap: "wrap" }}>
+                                  {archived && (
+                                    <Chip label="Archived" size="small" color="default" variant="outlined" />
+                                  )}
                                   {staleLevel === "stale" && (
                                     <Chip label="30+ days old" size="small" color="warning" variant="outlined" />
                                   )}
@@ -933,17 +1059,57 @@ export default function JobsManager() {
                               </Box>
                             )}
 
+                            {/* Address box */}
                             {(() => {
-                              const revenue = parseFloat(job.amount || 0);
+                              const customer = customerMap[job.customerId];
+                              const addr = customer?.address || job.address || job.clientAddress || null;
+                              if (!addr) return null;
+                              return (
+                                <Box sx={{ mb: 2, p: 1, bgcolor: "#f3f8ff", borderRadius: 1, borderLeft: "3px solid #42a5f5", display: "flex", alignItems: "center", gap: 1 }}>
+                                  <Typography variant="caption" sx={{ fontSize: "0.78rem" }}>
+                                    📍 {addr}
+                                  </Typography>
+                                </Box>
+                              );
+                            })()}
+
+                            {(() => {
+                              const inv = invoiceMap[job.id];
+                              const pmt = inv ? paymentMap[inv.id] : null;
+                              const revenue = inv ? parseFloat(inv.total || inv.amount || 0) : parseFloat(job.amount || 0);
                               const materials = parseFloat(job.totalExpenses || 0);
                               const hasRevenue = revenue > 0;
+
+                              // Payment status chip
+                              const paymentChip = pmt && pmt.paymentCount > 0 ? (
+                                <Box sx={{ mb: 1, p: 1, bgcolor: pmt.isPaid ? "#e8f5e9" : "#fff8e1", borderRadius: 1, borderLeft: `3px solid ${pmt.isPaid ? "#4caf50" : "#ff9800"}`, display: "flex", justifyContent: "space-between" }}>
+                                  <Typography variant="caption" fontWeight="bold" color={pmt.isPaid ? "success.main" : "warning.dark"}>
+                                    {pmt.isPaid ? "✅ PAID IN FULL" : `💳 ${pmt.paymentCount} payment${pmt.paymentCount !== 1 ? "s" : ""} received`}
+                                  </Typography>
+                                  {!pmt.isPaid && (
+                                    <Typography variant="caption" color="warning.dark">
+                                      ${pmt.balance.toFixed(0)} left
+                                    </Typography>
+                                  )}
+                                </Box>
+                              ) : inv ? (
+                                <Box sx={{ mb: 1, p: 1, bgcolor: "#fff3e0", borderRadius: 1, borderLeft: "3px solid #ff9800" }}>
+                                  <Typography variant="caption" color="warning.dark">
+                                    ⏳ Invoice sent — awaiting payment
+                                  </Typography>
+                                </Box>
+                              ) : null;
+
                               if (!hasRevenue) {
                                 return (
-                                  <Box sx={{ mb: 2, p: 1, bgcolor: "#f5f5f5", borderRadius: 1, display: "flex", alignItems: "center", gap: 1 }}>
-                                    <Typography variant="caption" color="text.secondary">
-                                      💰 No invoice — profitability unknown
-                                    </Typography>
-                                  </Box>
+                                  <>
+                                    {paymentChip}
+                                    <Box sx={{ mb: 2, p: 1, bgcolor: "#f5f5f5", borderRadius: 1 }}>
+                                      <Typography variant="caption" color="text.secondary">
+                                        💰 No invoice — profitability unknown
+                                      </Typography>
+                                    </Box>
+                                  </>
                                 );
                               }
                               const profit = revenue - materials;
@@ -954,14 +1120,17 @@ export default function JobsManager() {
                               const borderColor = isLoss ? "#f44336" : isThin ? "#ff9800" : "#4caf50";
                               const emoji = isLoss ? "🔴" : isThin ? "🟡" : "🟢";
                               return (
-                                <Box sx={{ mb: 2, p: 1, bgcolor, borderRadius: 1, borderLeft: `3px solid ${borderColor}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                                  <Typography variant="caption" fontWeight="bold">
-                                    {emoji} Margin: {margin.toFixed(0)}%
-                                  </Typography>
-                                  <Typography variant="caption" color="text.secondary">
-                                    ${revenue.toFixed(0)} rev · ${materials.toFixed(0)} mat
-                                  </Typography>
-                                </Box>
+                                <>
+                                  {paymentChip}
+                                  <Box sx={{ mb: 2, p: 1, bgcolor, borderRadius: 1, borderLeft: `3px solid ${borderColor}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                    <Typography variant="caption" fontWeight="bold">
+                                      {emoji} Margin: {margin.toFixed(0)}%
+                                    </Typography>
+                                    <Typography variant="caption" color="text.secondary">
+                                      ${revenue.toFixed(0)} rev · ${materials.toFixed(0)} mat
+                                    </Typography>
+                                  </Box>
+                                </>
                               );
                             })()}
 
@@ -1016,6 +1185,31 @@ export default function JobsManager() {
                             <Button variant="contained" color="primary" onClick={() => navigate(`/job-expenses/${job.id}`)} fullWidth size="small">
                               View Expenses & Profit
                             </Button>
+
+                            {archived ? (
+                              <Button
+                                variant="contained"
+                                color="success"
+                                startIcon={<UnarchiveIcon />}
+                                onClick={() => handleRestoreJob(job)}
+                                fullWidth
+                                size="small"
+                              >
+                                Restore Job
+                              </Button>
+                            ) : (
+                              <Button
+                                variant="outlined"
+                                color="warning"
+                                startIcon={<ArchiveIcon />}
+                                onClick={() => handleArchiveJob(job)}
+                                fullWidth
+                                size="small"
+                              >
+                                Archive Job
+                              </Button>
+                            )}
+
                             <Button variant="outlined" color="error" onClick={() => handleDeleteJob(job.id, job.clientName)} fullWidth size="small">
                               Delete Job
                             </Button>

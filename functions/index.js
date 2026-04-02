@@ -131,13 +131,24 @@ function detectMediaType(base64String) {
   return 'image/jpeg'; // safe default for phone camera shots
 }
 
+// ========================= RECEIPT SCANNER (Claude Vision - Multi-Image) =========================
+
 exports.scanReceipt = functions.runWith({ secrets: ['ANTHROPIC_API_KEY'] }).https.onCall(async (data, context) => {
-  console.log('>>> SCAN STARTED (Claude Vision)');
+  console.log('>>> SCAN STARTED (Claude Vision - Multi-Image)');
 
   try {
-    if (!data.image) {
-      throw new functions.https.HttpsError('invalid-argument', 'Image required');
+    // Accept images[] array (new multi-scan) OR single image string (legacy fallback)
+    const images = data.images
+      ? data.images
+      : data.image
+        ? [data.image]
+        : null;
+
+    if (!images || images.length === 0) {
+      throw new functions.https.HttpsError('invalid-argument', 'At least one image is required');
     }
+
+    console.log(`>>> Image count: ${images.length}`);
 
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) {
@@ -147,10 +158,7 @@ exports.scanReceipt = functions.runWith({ secrets: ['ANTHROPIC_API_KEY'] }).http
       );
     }
 
-    const mediaType = detectMediaType(data.image);
-    console.log('>>> Detected media type:', mediaType);
-
-    const prompt = `You are a receipt scanner for a landscaping company. Analyze this receipt image carefully and return ONLY a valid JSON object — no markdown, no code fences, no explanation.
+    const prompt = `You are a receipt scanner for a landscaping company. Analyze ${images.length > 1 ? `these ${images.length} photos of the SAME receipt (provided in order from top to bottom — treat them as one continuous receipt)` : 'this receipt image'} carefully and return ONLY a valid JSON object — no markdown, no code fences, no explanation.
 
 Use this exact structure:
 {
@@ -180,6 +188,17 @@ Rules:
 - rawText: transcribe all text you can read from the receipt
 - Return ONLY the JSON object, absolutely nothing else`;
 
+    // Build content blocks — one image block per photo, then the text prompt at the end
+    const contentBlocks = images.map((img) => ({
+      type: 'image',
+      source: {
+        type: 'base64',
+        media_type: detectMediaType(img),
+        data: img,
+      },
+    }));
+    contentBlocks.push({ type: 'text', text: prompt });
+
     console.log('>>> Calling Anthropic API...');
 
     const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -195,20 +214,7 @@ Rules:
         messages: [
           {
             role: 'user',
-            content: [
-              {
-                type: 'image',
-                source: {
-                  type: 'base64',
-                  media_type: mediaType,
-                  data: data.image,
-                },
-              },
-              {
-                type: 'text',
-                text: prompt,
-              },
-            ],
+            content: contentBlocks,
           },
         ],
       }),
@@ -232,7 +238,6 @@ Rules:
     try {
       parsed = JSON.parse(rawOutput.trim());
     } catch (parseErr) {
-      // If Claude wrapped the JSON in anything, extract it
       const jsonMatch = rawOutput.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         parsed = JSON.parse(jsonMatch[0]);
@@ -243,9 +248,9 @@ Rules:
     }
 
     // Ensure numeric fields are actually numbers (defensive)
-    parsed.amount   = parseFloat(parsed.amount)   || 0;
-    parsed.subtotal = parseFloat(parsed.subtotal) || 0;
-    parsed.tax      = parseFloat(parsed.tax)      || 0;
+    parsed.amount    = parseFloat(parsed.amount)    || 0;
+    parsed.subtotal  = parseFloat(parsed.subtotal)  || 0;
+    parsed.tax       = parseFloat(parsed.tax)       || 0;
     parsed.lineItems = Array.isArray(parsed.lineItems) ? parsed.lineItems : [];
 
     console.log(`>>> SUCCESS: vendor=${parsed.vendor}, total=${parsed.amount}, items=${parsed.lineItems.length}`);

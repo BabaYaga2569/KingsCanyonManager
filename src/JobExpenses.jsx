@@ -34,6 +34,7 @@ export default function JobExpenses() {
   const [job, setJob] = useState(null);
   const [expenses, setExpenses] = useState([]);
   const [invoice, setInvoice] = useState(null);
+  const [jobPayments, setJobPayments] = useState([]);
   const [viewingItems, setViewingItems] = useState(null);
   const [laborEntries, setLaborEntries] = useState([]);
   const [crewUsers, setCrewUsers] = useState([]);
@@ -77,6 +78,19 @@ export default function JobExpenses() {
       // Load users for hourly rate lookup (time entries don't always store rate)
       const usersSnap = await getDocs(collection(db, "users"));
       setCrewUsers(usersSnap.docs.map(d => ({ id: d.id, ...d.data() })));
+
+      // Load payments for this job's invoice
+      if (jobInvoice) {
+        try {
+          const paymentsSnap = await getDocs(collection(db, "payments"));
+          const invoicePayments = paymentsSnap.docs
+            .map(d => ({ id: d.id, ...d.data() }))
+            .filter(p => p.invoiceId === jobInvoice.id);
+          setJobPayments(invoicePayments);
+        } catch (e) {
+          console.warn("Could not load payments:", e);
+        }
+      }
 
       setLoading(false);
     } catch (error) {
@@ -237,8 +251,12 @@ export default function JobExpenses() {
 
   // ── FINANCIAL CALCULATIONS ──
   const totalExpenses = expenses.reduce((sum, e) => sum + parseFloat(e.amount || 0), 0);
+  const billableExpenses = expenses.filter(e => e.billableToClient === true);
+  const kclExpenses = expenses.filter(e => !e.billableToClient);
+  const billableMaterialsTotal = billableExpenses.reduce((sum, e) => sum + parseFloat(e.amount || 0), 0);
+  const kclExpensesTotal = kclExpenses.reduce((sum, e) => sum + parseFloat(e.amount || 0), 0);
   const clientAdvance = parseFloat(job.clientAdvance || 0);
-  const netCost = Math.max(0, totalExpenses - clientAdvance);
+  const netCost = Math.max(0, kclExpensesTotal - clientAdvance);
   const revenue = invoice ? parseFloat(invoice.total || invoice.amount || 0) : parseFloat(job.amount || 0);
 
   // ── LABOR CALCULATIONS ──
@@ -269,13 +287,18 @@ export default function JobExpenses() {
   const laborRows = Object.values(laborByCrewMember);
   const totalLaborHours = laborRows.reduce((sum, r) => sum + r.hours, 0);
   const totalLaborCost = laborRows.reduce((sum, r) => sum + (r.hours * r.rate), 0);
-  const totalCost = totalExpenses + totalLaborCost;
+  const totalCost = kclExpensesTotal + totalLaborCost;  // billable pass-throughs excluded
 
   const profit = revenue - totalCost - clientAdvance;
   const profitMargin = revenue > 0 ? ((profit / revenue) * 100).toFixed(1) : 0;
 
+  // Payment calculations
+  const totalPaid = jobPayments.reduce((sum, p) => sum + parseFloat(p.amount || 0), 0);
+  const balanceDue = Math.max(0, revenue - totalPaid);
+  const isPaidInFull = totalPaid >= revenue && revenue > 0;
+
   const budget = parseFloat(job.amount || 0);
-  const budgetUsedPct = budget > 0 ? Math.min(100, (totalExpenses / budget) * 100) : 0;
+  const budgetUsedPct = budget > 0 ? Math.min(100, (kclExpensesTotal / budget) * 100) : 0;
   const budgetColor = budgetUsedPct >= 90 ? "error" : budgetUsedPct >= 70 ? "warning" : "success";
 
   const expensesByCategory = {};
@@ -357,7 +380,7 @@ export default function JobExpenses() {
               📊 Materials Budget
             </Typography>
             <Typography variant="subtitle2" color={budgetColor + ".main"} sx={{ fontWeight: 700 }}>
-              ${totalExpenses.toFixed(2)} / ${budget.toFixed(2)} ({budgetUsedPct.toFixed(0)}%)
+              ${kclExpensesTotal.toFixed(2)}{billableMaterialsTotal > 0 ? ` (+$${billableMaterialsTotal.toFixed(2)} client)` : ""} / ${budget.toFixed(2)} ({budgetUsedPct.toFixed(0)}%)
             </Typography>
           </Box>
           <Tooltip title={`$${(budget - totalExpenses).toFixed(2)} remaining`}>
@@ -390,11 +413,24 @@ export default function JobExpenses() {
               </Typography>
             </Box>
           </Grid>
+          {billableMaterialsTotal > 0 && (
+            <Grid item xs={6} sm={2}>
+              <Box sx={{ textAlign: "center", bgcolor: "rgba(230,81,0,0.12)", borderRadius: 1, p: 0.5 }}>
+                <Typography variant="subtitle2" sx={{ color: "#e65100", fontWeight: 700 }}>Client Materials</Typography>
+                <Typography variant="h5" sx={{ color: "#e65100", fontWeight: 700 }}>
+                  ${billableMaterialsTotal.toFixed(2)}
+                </Typography>
+                <Typography variant="caption" sx={{ color: "#e65100" }}>pass-through</Typography>
+              </Box>
+            </Grid>
+          )}
           <Grid item xs={6} sm={2}>
             <Box sx={{ textAlign: "center" }}>
-              <Typography variant="subtitle2" color="text.secondary">Materials</Typography>
+              <Typography variant="subtitle2" color="text.secondary">
+                {billableMaterialsTotal > 0 ? "KCL Materials" : "Materials"}
+              </Typography>
               <Typography variant="h5" color="error.main" sx={{ fontWeight: 700 }}>
-                ${totalExpenses.toFixed(2)}
+                ${kclExpensesTotal.toFixed(2)}
               </Typography>
             </Box>
           </Grid>
@@ -436,14 +472,70 @@ export default function JobExpenses() {
           </Grid>
         </Grid>
 
+        {billableMaterialsTotal > 0 && (
+          <Box sx={{ mt: 2, p: 1.5, bgcolor: "rgba(230,81,0,0.1)", borderRadius: 1, border: "1px solid rgba(230,81,0,0.3)" }}>
+            <Typography variant="caption" sx={{ color: "#e65100" }}>
+              💰 <strong>${billableMaterialsTotal.toFixed(2)}</strong> in client materials ({billableExpenses.length} item{billableExpenses.length !== 1 ? "s" : ""}) are pass-through costs — billed to the client, not charged against KCL profit.
+            </Typography>
+          </Box>
+        )}
         {clientAdvance > 0 && (
-          <Box sx={{ mt: 2, p: 1.5, bgcolor: "rgba(255,255,255,0.5)", borderRadius: 1 }}>
+          <Box sx={{ mt: 1, p: 1.5, bgcolor: "rgba(255,255,255,0.5)", borderRadius: 1 }}>
             <Typography variant="caption" color="text.secondary">
               💡 Client gave you <strong>${clientAdvance.toFixed(2)}</strong> upfront for materials.
             </Typography>
           </Box>
         )}
       </Paper>
+
+      {/* ── PAYMENT STATUS ─────────────────────────────────────────────────── */}
+      {invoice && (
+        <Paper sx={{ p: 3, mb: 3, borderRadius: 2, border: "2px solid", borderColor: isPaidInFull ? "success.main" : totalPaid > 0 ? "warning.main" : "divider" }}>
+          <Typography variant="h6" gutterBottom sx={{ fontWeight: 700 }}>
+            💳 Payment Status
+          </Typography>
+          <Box sx={{ display: "flex", gap: 2, flexWrap: "wrap" }}>
+            <Box sx={{ textAlign: "center", p: 2, bgcolor: "white", borderRadius: 1, flex: 1 }}>
+              <Typography variant="caption" color="text.secondary">Invoice Total</Typography>
+              <Typography variant="h5" color="primary.dark" fontWeight="bold">${revenue.toFixed(2)}</Typography>
+            </Box>
+            <Box sx={{ textAlign: "center", p: 2, bgcolor: totalPaid > 0 ? "#e8f5e9" : "#f5f5f5", borderRadius: 1, flex: 1 }}>
+              <Typography variant="caption" color="text.secondary">Amount Paid</Typography>
+              <Typography variant="h5" color="success.main" fontWeight="bold">${totalPaid.toFixed(2)}</Typography>
+            </Box>
+            <Box sx={{ textAlign: "center", p: 2, bgcolor: isPaidInFull ? "#e8f5e9" : balanceDue > 0 ? "#fff3e0" : "#f5f5f5", borderRadius: 1, flex: 1 }}>
+              <Typography variant="caption" color="text.secondary">Balance Due</Typography>
+              <Typography variant="h5" color={isPaidInFull ? "success.main" : "warning.main"} fontWeight="bold">
+                {isPaidInFull ? "PAID ✓" : `$${balanceDue.toFixed(2)}`}
+              </Typography>
+            </Box>
+          </Box>
+          {jobPayments.length > 0 && (
+            <Box sx={{ mt: 2 }}>
+              <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1, fontWeight: 700 }}>
+                Payment History:
+              </Typography>
+              {jobPayments.map((p, idx) => (
+                <Box key={idx} sx={{ display: "flex", justifyContent: "space-between", p: 1, bgcolor: "#f9f9f9", borderRadius: 1, mb: 0.5 }}>
+                  <Typography variant="caption">
+                    {p.paymentDate ? new Date(p.paymentDate).toLocaleDateString() : "—"} · {p.paymentMethod || "Zelle"}
+                  </Typography>
+                  <Typography variant="caption" fontWeight="bold" color="success.main">
+                    +${parseFloat(p.amount || 0).toFixed(2)}
+                  </Typography>
+                </Box>
+              ))}
+            </Box>
+          )}
+          {!isPaidInFull && balanceDue > 0 && (
+            <Box sx={{ mt: 1.5, p: 1, bgcolor: "#fff8e1", borderRadius: 1 }}>
+              <Typography variant="caption" color="warning.dark">
+                ⏳ ${balanceDue.toFixed(2)} outstanding — mark as Paid in the Invoice editor once received.
+              </Typography>
+            </Box>
+          )}
+        </Paper>
+      )}
 
       {/* ── LABOR SECTION ─────────────────────────────────────────────────── */}
       <Paper sx={{ borderRadius: 2, overflow: "hidden", mb: 3 }}>
@@ -601,6 +693,11 @@ export default function JobExpenses() {
                 <Box sx={{ display: "flex", justifyContent: "space-between" }}>
                   <Typography color="text.secondary">Total Expenses</Typography>
                   <Typography sx={{ fontWeight: 700 }} color="error.main">${totalExpenses.toFixed(2)}</Typography>
+                  {billableMaterialsTotal > 0 && (
+                    <Typography variant="caption" sx={{ color: "#e65100", display: "block" }}>
+                      (incl. ${billableMaterialsTotal.toFixed(2)} client pass-through)
+                    </Typography>
+                  )}
                 </Box>
                 {clientAdvance > 0 && (
                   <Box sx={{ display: "flex", justifyContent: "space-between" }}>

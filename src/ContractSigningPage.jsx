@@ -45,7 +45,6 @@ const COMPANY = {
 };
 
 // This is a PUBLIC page - customers access without logging in
-// It should NOT show navigation or allow access to other parts of the app
 function ContractSigningPageContent() {
   const { contractId } = useParams();
   const [loading, setLoading] = useState(true);
@@ -63,7 +62,6 @@ function ContractSigningPageContent() {
 
   const loadContract = async () => {
     try {
-      // Get token from URL
       const token = getTokenFromUrl();
       
       const docRef = doc(db, "contracts", contractId);
@@ -77,7 +75,6 @@ function ContractSigningPageContent() {
 
       const data = snap.data();
       
-      // Verify token matches (Firestore rules will also check this)
       if (data.signingToken && data.signingToken !== token) {
         Swal.fire("Access Denied", "Invalid or expired link. Please request a new signing link.", "error");
         setLoading(false);
@@ -86,7 +83,6 @@ function ContractSigningPageContent() {
       
       setContract(data);
       
-      // Check if already signed by client
       if (data.clientSignature && data.clientSignedAt) {
         setAlreadySigned(true);
       }
@@ -120,7 +116,6 @@ function ContractSigningPageContent() {
       const signatureData = sigPadRef.current.toDataURL();
       const timestamp = new Date().toISOString();
       
-      // Auto-generate Darren's signature
       const darrenSig = generateDarrenSignature();
 
       await updateDoc(doc(db, "contracts", contractId), {
@@ -128,13 +123,12 @@ function ContractSigningPageContent() {
         clientSignedAt: timestamp,
         contractorSignature: darrenSig,
         contractorSignedAt: timestamp,
-        status: "Fully Signed", // Both signatures applied automatically
+        status: "Fully Signed",
         lastUpdated: timestamp,
       });
 
       console.log("Contract signed by client:", contractId);
 
-      // Phase 3: Notify admins via text
       try {
         const functions = getFunctions();
         const notifySignature = httpsCallable(functions, 'notifySignature');
@@ -174,22 +168,16 @@ function ContractSigningPageContent() {
     }
   };
 
-  // Generate Darren's auto-signature
   const generateDarrenSignature = () => {
     const canvas = document.createElement('canvas');
     canvas.width = 400;
     canvas.height = 100;
     const ctx = canvas.getContext('2d');
-    
-    // White background
     ctx.fillStyle = 'white';
     ctx.fillRect(0, 0, 400, 100);
-    
-    // Signature text in cursive style
     ctx.font = '32px "Brush Script MT", cursive';
     ctx.fillStyle = 'black';
     ctx.fillText('Darren Bennett', 50, 60);
-    
     return canvas.toDataURL('image/png');
   };
 
@@ -262,7 +250,7 @@ function ContractSigningPageContent() {
         </Box>
 
         <Box sx={{ mb: 2 }}>
-          <Typography variant="body2" color="text.secondary">Amount</Typography>
+          <Typography variant="body2" color="text.secondary">Contract Amount (Labor)</Typography>
           <Typography variant="h5" color="primary" fontWeight="bold">
             ${(contract.amount || 0).toFixed(2)}
           </Typography>
@@ -275,7 +263,7 @@ function ContractSigningPageContent() {
 
         {contract.materials && (
           <Box sx={{ mb: 2 }}>
-            <Typography variant="body2" color="text.secondary">Materials</Typography>
+            <Typography variant="body2" color="text.secondary">Materials (Estimate — Billed Separately at Actual Cost)</Typography>
             <Typography variant="body1">{contract.materials}</Typography>
           </Box>
         )}
@@ -285,12 +273,13 @@ function ContractSigningPageContent() {
         {/* Terms */}
         <Typography variant="subtitle2" gutterBottom>Terms & Conditions</Typography>
         <Typography variant="body2" color="text.secondary" paragraph>
-          Payment is due upon substantial completion of the project. Invoices are due within 14 days. 
-          A late payment fee of 5% may be applied to balances over 15 days past due.
+          <strong>Payment Terms:</strong> A deposit of 50% is required before work begins. The remaining balance is due upon substantial completion of the project. Invoices are due within 14 days. A late payment fee of 5% may be applied to balances over 15 days past due.
         </Typography>
         <Typography variant="body2" color="text.secondary" paragraph>
-          All workmanship is warranted for 30 days from completion against defects in installation. 
-          Client may cancel before work begins; if materials have been ordered, a restocking fee may apply.
+          <strong>Materials Cost:</strong> This contract covers labor only. All materials required for this project will be purchased by Kings Canyon Landscaping LLC and billed to the client at actual cost, separate from and in addition to the contract amount above. Final materials cost will reflect actual purchase receipts.
+        </Typography>
+        <Typography variant="body2" color="text.secondary" paragraph>
+          <strong>Warranty:</strong> All workmanship is warranted for 30 days from completion against defects in installation. Client may cancel before work begins; if materials have been ordered, a restocking fee may apply.
         </Typography>
       </Paper>
 

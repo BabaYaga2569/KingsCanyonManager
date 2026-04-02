@@ -63,7 +63,6 @@ function BidSigningPageContent() {
 
   const loadBid = async () => {
     try {
-      // Get token from URL
       const token = getTokenFromUrl();
       
       const docRef = doc(db, "bids", bidId);
@@ -77,7 +76,6 @@ function BidSigningPageContent() {
 
       const data = snap.data();
       
-      // Verify token matches (Firestore rules will also check this)
       if (data.signingToken && data.signingToken !== token) {
         Swal.fire("Access Denied", "Invalid or expired link. Please request a new signing link.", "error");
         setLoading(false);
@@ -86,7 +84,6 @@ function BidSigningPageContent() {
       
       setBid(data);
       
-      // Check if already signed by client
       if (data.clientSignature && data.clientSignedAt) {
         setAlreadySigned(true);
       }
@@ -120,7 +117,6 @@ function BidSigningPageContent() {
       const signatureData = sigPadRef.current.toDataURL();
       const timestamp = new Date().toISOString();
       
-      // Auto-generate Darren's signature
       const darrenSig = generateDarrenSignature();
 
       await updateDoc(doc(db, "bids", bidId), {
@@ -128,13 +124,12 @@ function BidSigningPageContent() {
         clientSignedAt: timestamp,
         contractorSignature: darrenSig,
         contractorSignedAt: timestamp,
-        status: "Accepted", // Bid is now accepted
+        status: "Accepted",
         lastUpdated: timestamp,
       });
 
       console.log("Bid accepted by client:", bidId);
 
-      // Phase 3: Notify admins via text
       try {
         const functions = getFunctions();
         const notifySignature = httpsCallable(functions, 'notifySignature');
@@ -149,14 +144,12 @@ function BidSigningPageContent() {
         console.error("Admin notification failed (non-blocking):", notifyError);
       }
 
-	        // Phase 2C Fix 3: Auto-create contract + invoice + job package
       try {
         const bidData = { ...bid, id: bidId };
-         await createFullJobPackage(bidData, true);
+        await createFullJobPackage(bidData, true);
         console.log("Job package auto-created for bid:", bidId);
       } catch (pkgError) {
         console.error("Auto-create package failed (will need manual creation):", pkgError);
-        // Don't block the signing success - package can be created manually from Bids list
       }
 
       Swal.fire({
@@ -184,22 +177,16 @@ function BidSigningPageContent() {
     }
   };
 
-  // Generate Darren's auto-signature
   const generateDarrenSignature = () => {
     const canvas = document.createElement('canvas');
     canvas.width = 400;
     canvas.height = 100;
     const ctx = canvas.getContext('2d');
-    
-    // White background
     ctx.fillStyle = 'white';
     ctx.fillRect(0, 0, 400, 100);
-    
-    // Signature text in cursive style
     ctx.font = '32px "Brush Script MT", cursive';
     ctx.fillStyle = 'black';
     ctx.fillText('Darren Bennett', 50, 60);
-    
     return canvas.toDataURL('image/png');
   };
 
@@ -254,7 +241,6 @@ function BidSigningPageContent() {
   }
 
   const depositAmount = (bid.amount || 0) * 0.5;
-  const finalAmount = (bid.amount || 0) - depositAmount;
 
   return (
     <Container maxWidth="md" sx={{ mt: 4, mb: 6 }}>
@@ -290,7 +276,7 @@ function BidSigningPageContent() {
               <strong>Client:</strong> {bid.customerName}
             </Typography>
             <Typography variant="body1" sx={{ mb: 1 }}>
-              <strong>Estimated Amount:</strong> ${(bid.amount || 0).toFixed(2)}
+              <strong>Estimated Amount (Labor):</strong> ${(bid.amount || 0).toFixed(2)}
             </Typography>
             <Typography variant="body1" sx={{ mb: 1 }}>
               <strong>Required Deposit (50%):</strong> ${depositAmount.toFixed(2)}
@@ -313,7 +299,7 @@ function BidSigningPageContent() {
             {bid.materials && (
               <Box sx={{ mt: 2 }}>
                 <Typography variant="subtitle2" gutterBottom>
-                  <strong>Materials:</strong>
+                  <strong>Materials (Estimate — Billed Separately at Actual Cost):</strong>
                 </Typography>
                 <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", pl: 2 }}>
                   {bid.materials}
@@ -339,6 +325,9 @@ function BidSigningPageContent() {
             </Typography>
             <Typography variant="body2" paragraph>
               <strong>Pricing:</strong> Final pricing may vary based on site conditions and material availability. Any changes will be communicated before proceeding.
+            </Typography>
+            <Typography variant="body2" paragraph>
+              <strong>Materials Cost:</strong> This bid covers labor only. All materials required for this project will be purchased by Kings Canyon Landscaping LLC and billed to the client at actual cost, separate from the labor price above. Final materials cost will reflect actual purchase receipts.
             </Typography>
             <Typography variant="body2" paragraph>
               <strong>Warranty:</strong> All workmanship is warranted for 30 days from completion against defects in installation.

@@ -61,7 +61,20 @@ export default async function generateContractPDF(contract, logoDataUrl) {
 
   writeLabelValue("Client", contract.clientName);
   writeLabelValue("Status", contract.status || "Pending");
-  writeLabelValue("Amount", contract.amount ? `$${contract.amount}` : "N/A");
+  // Contract amount — custom layout so label doesn't overlap value
+  docPDF.setFont("helvetica", "bold");
+  docPDF.text("Contract Amount:", 40, y);
+  docPDF.setFont("helvetica", "normal");
+  docPDF.text(contract.amount ? `$${contract.amount}` : "N/A", 160, y);
+  y += 14;
+  docPDF.setFont("helvetica", "italic");
+  docPDF.setFontSize(9);
+  docPDF.setTextColor(100);
+  docPDF.text("(Labor only — materials billed separately at actual cost)", 40, y);
+  docPDF.setFontSize(10);
+  docPDF.setTextColor(0);
+  docPDF.setFont("helvetica", "normal");
+  y += 18;
 
   docPDF.setFont("helvetica", "bold");
   docPDF.text("Description:", 40, y);
@@ -96,6 +109,21 @@ export default async function generateContractPDF(contract, logoDataUrl) {
   y = writeParagraph(
     docPDF,
     "A deposit of 50% of the total contract amount is required before work begins. The remaining balance is due upon substantial completion of the project. Invoices are due within 14 days. A late payment fee of 5% may be applied to balances over 15 days past due.",
+    40,
+    y,
+    W - 80
+  );
+  y += 8;
+
+  docPDF.setFont("helvetica", "bold");
+  docPDF.setFontSize(11);
+  docPDF.text("Materials Cost", 40, y);
+  y += 14;
+  docPDF.setFont("helvetica", "normal");
+  docPDF.setFontSize(10);
+  y = writeParagraph(
+    docPDF,
+    "This contract covers labor only. All materials required for this project will be purchased by Kings Canyon Landscaping LLC and billed to the client at actual cost, separate from and in addition to the contract amount above. A materials estimate is provided for reference; final materials cost will reflect actual purchase receipts and will be invoiced upon completion.",
     40,
     y,
     W - 80
@@ -148,7 +176,7 @@ export default async function generateContractPDF(contract, logoDataUrl) {
   );
   y += 20;
 
-  // signature boxes
+  // Signature boxes
   const sigTop = y;
   const sigBoxH = 80;
   const col1X = 40;
@@ -159,7 +187,6 @@ export default async function generateContractPDF(contract, logoDataUrl) {
   docPDF.rect(col1X, sigTop, boxW, sigBoxH);
   docPDF.rect(col2X, sigTop, boxW, sigBoxH);
 
-  // Add signatures if they exist
   if (contract.clientSignature) {
     docPDF.addImage(contract.clientSignature, "PNG", col1X + 6, sigTop + 6, boxW - 12, sigBoxH - 12);
   }
@@ -167,7 +194,6 @@ export default async function generateContractPDF(contract, logoDataUrl) {
     docPDF.addImage(contract.contractorSignature, "PNG", col2X + 6, sigTop + 6, boxW - 12, sigBoxH - 12);
   }
 
-  // signature labels
   y = sigTop + sigBoxH + 16;
   docPDF.setFont("helvetica", "bold");
   docPDF.setFontSize(10);
@@ -181,8 +207,8 @@ export default async function generateContractPDF(contract, logoDataUrl) {
   docPDF.text(`Company: ${COMPANY.name}`, col2X, y);
   y += 12;
 
-  docPDF.text(`Signed: ${contract.clientSignedAt || "â€”"}`, col1X, y);
-  docPDF.text(`Signed: ${contract.contractorSignedAt || "â€”"}`, col2X, y);
+  docPDF.text(`Signed: ${contract.clientSignedAt || "—"}`, col1X, y);
+  docPDF.text(`Signed: ${contract.contractorSignedAt || "—"}`, col2X, y);
 
   // Footer
   docPDF.setFontSize(9);

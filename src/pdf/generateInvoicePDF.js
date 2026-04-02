@@ -8,7 +8,7 @@ const COMPANY = {
   email: "kingscanyon775@gmail.com",
 };
 
-const PAYMENT_BASE_URL = "https://kcl-manager-test.web.app/public/pay";
+const PAYMENT_BASE_URL = "https://landscape-manager-8dad0.web.app/public/pay";
 
 /**
  * Generate a professional invoice PDF with optional material breakdown
@@ -31,7 +31,7 @@ export default async function generateInvoicePDF(invoice, expenses = [], include
   // Frame / border
   doc.setDrawColor(60);
   doc.setLineWidth(1);
-  doc.rect(28, 28, W - 56, H - 56);
+  doc.rect(20, 20, W - 40, H - 40);
 
   // Header with logo
   if (logoDataUrl) {
@@ -125,41 +125,139 @@ export default async function generateInvoicePDF(invoice, expenses = [], include
     y += matLines.length * 16 + 10;
   }
 
-  // Amount table
+  // ── Pricing table — full width ──────────────────────────────
   y += 20;
   const subtotal = parseFloat(invoice.subtotal || invoice.amount || 0);
   const tax = parseFloat(invoice.tax || 0);
-  const total = subtotal + tax;
 
-  const tableX = W - 280;
-  const colWidth = 120;
+  // Collect billable expenses from invoice stored data or passed expenses array
+  const billableExpenses = expenses.filter(e => e.billableToClient === true);
+  const billableMaterialsTotal = billableExpenses.reduce((sum, e) => sum + parseFloat(e.amount || 0), 0);
+  const total = subtotal + billableMaterialsTotal + tax;
 
-  doc.setDrawColor(200);
-  doc.setLineWidth(0.5);
+  const TBL_LEFT  = 40;
+  const TBL_RIGHT = W - 40;
+  const TBL_WIDTH = TBL_RIGHT - TBL_LEFT;
+  const AMT_X     = TBL_RIGHT;
+  const LBL_X     = TBL_LEFT + 8;
+  const LBL_MAX   = TBL_WIDTH - 90;
 
+  // Header row
+  doc.setDrawColor(60);
+  doc.setFillColor(240, 240, 240);
+  doc.rect(TBL_LEFT, y, TBL_WIDTH, 24, "F");
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(10);
+  doc.text("Item", LBL_X, y + 16);
+  doc.text("Amount", AMT_X, y + 16, { align: "right" });
+  y += 28;
+
+  // Labor / Services row
   doc.setFont("helvetica", "normal");
-  doc.text("Subtotal:", tableX, y);
-  doc.text(`$${subtotal.toFixed(2)}`, tableX + colWidth, y, { align: "right" });
-  y += 20;
+  doc.setDrawColor(200);
+  doc.text("Labor / Services", LBL_X, y + 14);
+  doc.text(`$${subtotal.toFixed(2)}`, AMT_X, y + 14, { align: "right" });
+  doc.line(TBL_LEFT, y + 20, TBL_RIGHT, y + 20);
+  y += 24;
 
-  if (tax > 0) {
-    const taxLabel = invoice.taxRate ? `Tax (${invoice.taxRate}%):` : "Tax:";
-    doc.text(taxLabel, tableX, y);
-    doc.text(`$${tax.toFixed(2)}`, tableX + colWidth, y, { align: "right" });
-    y += 20;
+  // Billable materials rows
+  if (billableExpenses.length > 0) {
+    billableExpenses.forEach((exp) => {
+      const vendorPart = exp.vendor || "Materials";
+      const descPart = exp.description ? ` — ${exp.description.substring(0, 60)}` : '';
+      const label = `${vendorPart}${descPart}`;
+      const labelLines = doc.splitTextToSize(label, LBL_MAX);
+      const rowH = labelLines.length * 13 + 10;
+      doc.setFont("helvetica", "normal");
+      doc.setTextColor(0);
+      doc.text(labelLines, LBL_X, y + 14);
+      doc.text(`$${parseFloat(exp.amount || 0).toFixed(2)}`, AMT_X, y + 14, { align: "right" });
+      doc.setDrawColor(200);
+      doc.line(TBL_LEFT, y + rowH, TBL_RIGHT, y + rowH);
+      y += rowH;
+    });
+    if (billableExpenses.length > 1) {
+      doc.setFont("helvetica", "italic");
+      doc.setTextColor(80);
+      doc.text("Materials Subtotal", LBL_X, y + 14);
+      doc.text(`$${billableMaterialsTotal.toFixed(2)}`, AMT_X, y + 14, { align: "right" });
+      doc.setTextColor(0);
+      doc.setDrawColor(150);
+      doc.line(TBL_LEFT, y + 20, TBL_RIGHT, y + 20);
+      y += 24;
+    }
   }
 
-  doc.line(tableX, y - 5, tableX + colWidth + 10, y - 5);
+  // Tax row
+  if (tax > 0) {
+    doc.setFont("helvetica", "normal");
+    doc.setDrawColor(200);
+    const taxLabel = invoice.taxRate ? `Tax (${invoice.taxRate}%)` : "Tax";
+    doc.text(taxLabel, LBL_X, y + 14);
+    doc.text(`$${tax.toFixed(2)}`, AMT_X, y + 14, { align: "right" });
+    doc.line(TBL_LEFT, y + 20, TBL_RIGHT, y + 20);
+    y += 24;
+  }
+
+  // Total row — full width blue bar
+  doc.setFillColor(21, 101, 192);
+  doc.rect(TBL_LEFT, y, TBL_WIDTH, 28, "F");
   doc.setFont("helvetica", "bold");
-  doc.setFontSize(13);
-  doc.text("TOTAL:", tableX, y + 4);
-  doc.text(`$${total.toFixed(2)}`, tableX + colWidth, y + 4, { align: "right" });
-  y += 30;
+  doc.setFontSize(12);
+  doc.setTextColor(255, 255, 255);
+  doc.text("TOTAL DUE", LBL_X, y + 18);
+  doc.text(`$${total.toFixed(2)}`, AMT_X, y + 18, { align: "right" });
+  doc.setTextColor(0, 0, 0);
+  doc.setDrawColor(60);
+  y += 36;
+
+  // Payment summary — show if payments have been made
+  const totalPaid = parseFloat(invoice._totalPaid || invoice.totalPaid || 0);
+  // Always calculate dynamically — stored remainingBalance may be stale
+  const remainingBalance = Math.max(0, total - totalPaid);
+  if (totalPaid > 0) {
+    y += 12;
+    const isPaidFull = remainingBalance <= 0;
+    const pmtBoxH = 50;
+    // If payment box won't fit on current page, start new page
+    if (y + pmtBoxH + 20 > H - 100) {
+      doc.addPage();
+      y = 60;
+    }
+    // Light shaded payment summary box
+    doc.setFillColor(isPaidFull ? 232 : 255, isPaidFull ? 245 : 243, isPaidFull ? 233 : 224);
+    doc.setDrawColor(isPaidFull ? 76 : 230, isPaidFull ? 175 : 126, isPaidFull ? 80 : 0);
+    doc.setLineWidth(0.5);
+    doc.roundedRect(TBL_LEFT, y, TBL_WIDTH, pmtBoxH, 3, 3, "FD");
+    // Payment received line
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(10);
+    doc.setTextColor(46, 125, 50);
+    doc.text("Payment Received:", LBL_X + 4, y + 16);
+    doc.text(`-$${totalPaid.toFixed(2)}`, AMT_X - 4, y + 16, { align: "right" });
+    // Divider
+    doc.setDrawColor(200);
+    doc.line(TBL_LEFT + 4, y + 25, TBL_RIGHT - 4, y + 25);
+    // Balance due line
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(11);
+    doc.setTextColor(isPaidFull ? 46 : 180, isPaidFull ? 125 : 0, isPaidFull ? 50 : 0);
+    doc.text(isPaidFull ? "✓ PAID IN FULL" : "Balance Due:", LBL_X + 4, y + 40);
+    if (!isPaidFull) {
+      doc.text(`$${remainingBalance.toFixed(2)}`, AMT_X - 4, y + 40, { align: "right" });
+    }
+    doc.setTextColor(0);
+    doc.setFont("helvetica", "normal");
+    doc.setDrawColor(60);
+    y += pmtBoxH + 8;
+  }
 
   if (invoice.status) {
     doc.setFont("helvetica", "normal");
     doc.setFontSize(10);
-    doc.text(`Status: ${invoice.status.toUpperCase()}`, tableX, y);
+    doc.setTextColor(100);
+    doc.text(`Status: ${invoice.status.toUpperCase()}`, LBL_X, y + 4);
+    doc.setTextColor(0);
     y += 16;
   }
 
@@ -177,11 +275,22 @@ export default async function generateInvoicePDF(invoice, expenses = [], include
     y += notesLines.length * 14;
   }
 
-  // ── PAYMENT LINK SECTION ──
+  // ── PAYMENT LINK + FOOTER ──
   if (invoice.id) {
     const payUrl = `${PAYMENT_BASE_URL}/${invoice.id}`;
-    const boxY = H - 130;
     const boxH = 52;
+    const footerH = 40; // space needed for footer below box
+    const totalNeeded = boxH + footerH + 20;
+
+    // If content is too close to bottom, push to new page
+    if (y + totalNeeded > H - 40) {
+      doc.addPage();
+      y = 60;
+    } else {
+      y += 20; // small gap between content and box
+    }
+
+    const boxY = y;
 
     // Shaded background box
     doc.setFillColor(240, 247, 255);
@@ -210,13 +319,14 @@ export default async function generateInvoicePDF(invoice, expenses = [], include
     // Reset colors
     doc.setTextColor(0);
     doc.setDrawColor(60);
+
+    y = boxY + boxH + 16;
   }
 
-  // Footer
-  const footerY = H - 56;
+  // Footer — always at bottom of current page
   doc.setFontSize(9);
   doc.setTextColor(100);
-  doc.text("Thank you for your business!", W / 2, footerY, { align: "center" });
+  doc.text("Thank you for your business!", W / 2, H - 36, { align: "center" });
 
   // ============================================
   // PAGE 2: MATERIAL BREAKDOWN (Optional)
