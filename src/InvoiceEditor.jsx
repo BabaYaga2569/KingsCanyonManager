@@ -2,6 +2,8 @@ import React, { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { doc, getDoc, updateDoc, collection, getDocs, addDoc, query, where } from "firebase/firestore";
 import { db } from "./firebase";
+import { useAuth } from "./AuthProvider";
+import { logAction, AUDIT_ACTIONS } from "./utils/auditLog";
 import {
   Container,
   Typography,
@@ -28,11 +30,13 @@ import ScheduleIcon from '@mui/icons-material/Schedule';
 import EmailIcon from '@mui/icons-material/Email';
 import moment from 'moment';
 import jsPDF from "jspdf";
+import generateInvoicePDF from "./pdf/generateInvoicePDF";
 import { sendInvoiceEmail } from "./emailService";
 
 const InvoiceEditor = () => {
   const { id } = useParams();
   const navigate = useNavigate();
+  const { user, userRole } = useAuth();
   const [invoice, setInvoice] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -372,11 +376,16 @@ const InvoiceEditor = () => {
             amount: total,
             paymentMethod: "other",
             paymentDate: invoice.paymentDate || moment().format("YYYY-MM-DD"),
-            reference: "Auto-generated from invoice status",
-            notes: "Automatically created when invoice marked as Paid",
+            reference: "Auto-generated from status change",
+            notes: "Created when invoice marked as Paid from dashboard",
             receiptGenerated: false,
             createdAt: new Date().toISOString(),
+            createdBy: user?.uid || null,
+            createdByName: user?.displayName || user?.email || "Unknown",
+            createdByRole: userRole || null,
+            source: "invoice_editor",
           });
+          await logAction(AUDIT_ACTIONS.PAYMENT_CREATED, { clientName: invoice.clientName, amount: total, source: 'invoice_editor', note: 'Invoice marked as Paid' }, user, userRole);
           
           console.log("✅ Auto-created payment record for tax reporting");
         } else {
@@ -463,252 +472,29 @@ const InvoiceEditor = () => {
   };
 
   // Build Invoice PDF
-  const buildInvoicePDF = () => {
+  const buildInvoicePDF = async () => {
     if (!invoice) return null;
-
-    const docPDF = new jsPDF({ unit: "pt", format: "letter" });
-    const W = docPDF.internal.pageSize.getWidth();
-    const H = docPDF.internal.pageSize.getHeight();
-
     const invoiceSubtotal = parseFloat(invoice.subtotal || invoice.amount || 0);
     const invoiceTax = parseFloat(invoice.tax || 0);
     const invoiceTotal = invoiceSubtotal + billableMaterialsTotal + invoiceTax;
+    const totalPaid = parseFloat(invoice.totalPaid || 0);
+    const remainingBalance = Math.max(0, invoiceTotal - totalPaid);
 
-    // Frame
-    docPDF.setDrawColor(60);
-    docPDF.setLineWidth(1);
-    docPDF.rect(20, 20, W - 40, H - 40);
+    const invoiceData = {
+      ...invoice,
+      id,
+      logoDataUrl,
+      _totalPaid: totalPaid,
+      _remainingBalance: remainingBalance,
+    };
 
-    // Logo
-    if (logoDataUrl) {
-      try {
-        docPDF.addImage(logoDataUrl, "PNG", 40, 42, 60, 60);
-      } catch (e) {
-        console.error("Error adding logo:", e);
-      }
-    }
-
-    // Company info
-    docPDF.setFont("helvetica", "bold");
-    docPDF.setFontSize(14);
-    docPDF.text(COMPANY.name, 110, 50);
-    docPDF.setFont("helvetica", "normal");
-    docPDF.setFontSize(10);
-    docPDF.text(COMPANY.cityState, 110, 66);
-    docPDF.text(COMPANY.phone, 110, 80);
-    docPDF.text(COMPANY.email, 110, 94);
-
-    // Title
-    docPDF.setFont("helvetica", "bold");
-    docPDF.setFontSize(18);
-    docPDF.text("INVOICE", W - 40, 55, { align: "right" });
-
-    // Invoice meta
-    docPDF.setFont("helvetica", "normal");
-    docPDF.setFontSize(10);
-    docPDF.text(`Invoice No.: ${id.slice(-8)}`, W - 40, 75, { align: "right" });
-    docPDF.text(`Date: ${invoice.invoiceDate || new Date().toLocaleDateString()}`, W - 40, 89, { align: "right" });
-    if (invoice.status) {
-      docPDF.text(`Status: ${invoice.status}`, W - 40, 103, { align: "right" });
-    }
-
-    // Divider
-    docPDF.setDrawColor(150);
-    docPDF.line(40, 115, W - 40, 115);
-
-    // Bill To
-    let y = 135;
-    docPDF.setFont("helvetica", "bold");
-    docPDF.setFontSize(11);
-    docPDF.text("Bill To:", 40, y);
-    y += 16;
-    docPDF.setFont("helvetica", "normal");
-    docPDF.setFontSize(10);
-    docPDF.text(invoice.clientName || "N/A", 40, y);
-    y += 14;
-    if (invoice.clientAddress) {
-      const addrLines = docPDF.splitTextToSize(invoice.clientAddress, 250);
-      docPDF.text(addrLines, 40, y);
-      y += addrLines.length * 12;
-    }
-    if (invoice.clientEmail) {
-      docPDF.text(invoice.clientEmail, 40, y);
-      y += 14;
-    }
-    if (invoice.clientPhone) {
-      docPDF.text(invoice.clientPhone, 40, y);
-      y += 14;
-    }
-
-    y += 16;
-
-    // Description
-    docPDF.setFont("helvetica", "bold");
-    docPDF.setFontSize(11);
-    docPDF.text("Description of Work", 40, y);
-    y += 14;
-    docPDF.setFont("helvetica", "normal");
-    docPDF.setFontSize(10);
-    const desc = docPDF.splitTextToSize(invoice.description || "Landscaping services", W - 80);
-    docPDF.text(desc, 40, y);
-    y += desc.length * 12 + 14;
-
-    // Materials
-    if (invoice.materials) {
-      docPDF.setFont("helvetica", "bold");
-      docPDF.setFontSize(11);
-      docPDF.text("Materials", 40, y);
-      y += 14;
-      docPDF.setFont("helvetica", "normal");
-      docPDF.setFontSize(10);
-      const mats = docPDF.splitTextToSize(invoice.materials, W - 80);
-      docPDF.text(mats, 40, y);
-      y += mats.length * 12 + 14;
-    }
-
-    // ── Pricing table — full width ──────────────────────────────
-    y += 10;
-    const TBL_LEFT   = 40;          // left edge of table
-    const TBL_RIGHT  = W - 40;      // right edge of table
-    const TBL_WIDTH  = TBL_RIGHT - TBL_LEFT;
-    const AMT_X      = TBL_RIGHT;   // amount column right-aligned here
-    const LBL_X      = TBL_LEFT + 8; // label starts here
-    const LBL_MAX    = TBL_WIDTH - 90; // max label width (leaves 90pt for amount)
-
-    // Header row
-    docPDF.setDrawColor(60);
-    docPDF.setFillColor(240, 240, 240);
-    docPDF.rect(TBL_LEFT, y, TBL_WIDTH, 24, "F");
-    docPDF.setFont("helvetica", "bold");
-    docPDF.setFontSize(10);
-    docPDF.text("Item", LBL_X, y + 16);
-    docPDF.text("Amount", AMT_X, y + 16, { align: "right" });
-    y += 28;
-
-    // Labor / Services row
-    docPDF.setFont("helvetica", "normal");
-    docPDF.text("Labor / Services", LBL_X, y + 14);
-    docPDF.text(`$${invoiceSubtotal.toFixed(2)}`, AMT_X, y + 14, { align: "right" });
-    docPDF.setDrawColor(200);
-    docPDF.line(TBL_LEFT, y + 20, TBL_RIGHT, y + 20);
-    y += 24;
-
-    // Billable materials rows — one per expense
-    if (billableExpenses.length > 0) {
-      billableExpenses.forEach((exp) => {
-        // Build a clean label — vendor + short description
-        const vendorPart = exp.vendor || "Materials";
-        const descPart = exp.description
-          ? ` — ${exp.description.substring(0, 60)}`
-          : '';
-        const label = `${vendorPart}${descPart}`;
-        const labelLines = docPDF.splitTextToSize(label, LBL_MAX);
-        const rowH = labelLines.length * 13 + 10;
-        docPDF.setFont("helvetica", "normal");
-        docPDF.setTextColor(0);
-        docPDF.text(labelLines, LBL_X, y + 14);
-        docPDF.text(`$${parseFloat(exp.amount || 0).toFixed(2)}`, AMT_X, y + 14, { align: "right" });
-        docPDF.setDrawColor(200);
-        docPDF.line(TBL_LEFT, y + rowH, TBL_RIGHT, y + rowH);
-        y += rowH;
-      });
-
-      // Materials subtotal row if more than one
-      if (billableExpenses.length > 1) {
-        docPDF.setFont("helvetica", "italic");
-        docPDF.setTextColor(80);
-        docPDF.text("Materials Subtotal", LBL_X, y + 14);
-        docPDF.text(`$${billableMaterialsTotal.toFixed(2)}`, AMT_X, y + 14, { align: "right" });
-        docPDF.setTextColor(0);
-        docPDF.setDrawColor(150);
-        docPDF.line(TBL_LEFT, y + 20, TBL_RIGHT, y + 20);
-        y += 24;
-      }
-    }
-
-    // Tax row
-    if (invoiceTax > 0) {
-      docPDF.setFont("helvetica", "normal");
-      docPDF.setDrawColor(200);
-      docPDF.text(`Tax (${taxRate}%)`, LBL_X, y + 14);
-      docPDF.text(`$${invoiceTax.toFixed(2)}`, AMT_X, y + 14, { align: "right" });
-      docPDF.line(TBL_LEFT, y + 20, TBL_RIGHT, y + 20);
-      y += 24;
-    }
-
-    // Total row — full width blue bar
-    docPDF.setFillColor(21, 101, 192);
-    docPDF.rect(TBL_LEFT, y, TBL_WIDTH, 28, "F");
-    docPDF.setFont("helvetica", "bold");
-    docPDF.setFontSize(12);
-    docPDF.setTextColor(255, 255, 255);
-    docPDF.text("TOTAL DUE", LBL_X, y + 18);
-    docPDF.text(`$${invoiceTotal.toFixed(2)}`, AMT_X, y + 18, { align: "right" });
-    docPDF.setTextColor(0, 0, 0);
-    docPDF.setDrawColor(60);
-    y += 40;
-
-    // Payment plan summary
-    if (paymentPlanEnabled) {
-      y += 10;
-      docPDF.setFont("helvetica", "bold");
-      docPDF.setFontSize(11);
-      docPDF.text("Payment Schedule", 40, y);
-      y += 16;
-      docPDF.setFont("helvetica", "normal");
-      docPDF.setFontSize(10);
-
-      const schedule = calculatePaymentSchedule();
-      schedule.forEach((payment, idx) => {
-        const label = idx === 0 ? "Down Payment" : `Payment #${idx + 1}`;
-        const date = moment(payment.dueDate).format("MMM DD, YYYY");
-        docPDF.text(`${label}: $${payment.amount.toFixed(2)} — Due ${date}`, 50, y);
-        y += 14;
-      });
-      y += 10;
-    }
-
-    // Payment info
-    y += 10;
-    docPDF.setFont("helvetica", "bold");
-    docPDF.setFontSize(11);
-    docPDF.text("Payment Options", 40, y);
-    y += 16;
-    docPDF.setFont("helvetica", "normal");
-    docPDF.setFontSize(10);
-    docPDF.text("Zelle: 928-450-5733", 50, y);
-    y += 14;
-    docPDF.text("Cash or Check accepted on-site", 50, y);
-    y += 14;
-
-    // Notes
-    if (invoice.notes) {
-      y += 10;
-      docPDF.setFont("helvetica", "bold");
-      docPDF.setFontSize(11);
-      docPDF.text("Notes", 40, y);
-      y += 14;
-      docPDF.setFont("helvetica", "normal");
-      docPDF.setFontSize(10);
-      const notes = docPDF.splitTextToSize(invoice.notes, W - 80);
-      docPDF.text(notes, 40, y);
-    }
-
-    // Footer
-    docPDF.setFontSize(9);
-    docPDF.setTextColor(100);
-    docPDF.text(
-      "Thank you for choosing Kings Canyon Landscaping. We appreciate your business.",
-      W / 2, H - 36, { align: "center" }
-    );
-
-    return docPDF;
+    return await generateInvoicePDF(invoiceData, expenses, false);
   };
 
   // Download Invoice PDF
-  const handleGeneratePDF = () => {
+  const handleGeneratePDF = async () => {
     try {
-      const docPDF = buildInvoicePDF();
+      const docPDF = await buildInvoicePDF();
       if (!docPDF) return;
 
       const filenameSafe = (invoice.clientName || "Invoice").replace(/[^\w\- ]+/g, "_").replace(/\s+/g, "_");
@@ -730,7 +516,8 @@ const InvoiceEditor = () => {
 
   // ✅ EMAIL INVOICE TO CUSTOMER
   const handleEmailToCustomer = async () => {
-    let emailToSend = invoice.clientEmail || invoice.customerEmail || "";
+    // Always read email fresh from invoice state OR prompt
+    let emailToSend = (invoice.clientEmail || invoice.customerEmail || "").trim();
     
     if (!emailToSend) {
       const { value: enteredEmail } = await Swal.fire({
@@ -744,15 +531,21 @@ const InvoiceEditor = () => {
       });
       
       if (!enteredEmail) return;
-      emailToSend = enteredEmail;
+      emailToSend = enteredEmail.trim();
       
       // Save email to invoice
-      setInvoice({ ...invoice, clientEmail: enteredEmail });
+      setInvoice(prev => ({ ...prev, clientEmail: emailToSend }));
       try {
-        await updateDoc(doc(db, "invoices", id), { clientEmail: enteredEmail });
+        await updateDoc(doc(db, "invoices", id), { clientEmail: emailToSend });
       } catch (e) {
         console.error("Error saving client email:", e);
       }
+    }
+
+    // Final guard — should never happen but protects the Cloud Function
+    if (!emailToSend) {
+      Swal.fire({ icon: 'error', title: 'No Email', text: 'Please add a client email address first.' });
+      return;
     }
     
     const invoiceTotal = parseFloat(invoice.subtotal || invoice.amount || 0) + parseFloat(invoice.tax || 0);
@@ -770,10 +563,13 @@ const InvoiceEditor = () => {
     
     setSending(true);
     try {
-      const docPDF = buildInvoicePDF();
+      const docPDF = await buildInvoicePDF();
       if (!docPDF) throw new Error("Failed to generate PDF");
       
       const pdfBase64 = docPDF.output('datauristring').split(',')[1];
+      if (!pdfBase64) throw new Error("Failed to encode PDF");
+
+      console.log('>>> Sending invoice email to:', emailToSend);
       
       await sendInvoiceEmail(
         emailToSend,
@@ -789,9 +585,8 @@ const InvoiceEditor = () => {
           emailSentAt: new Date().toISOString(),
           emailSentTo: emailToSend,
         });
-        setInvoice({ ...invoice, status: "Sent" });
+        setInvoice(prev => ({ ...prev, status: "Sent" }));
       } else {
-        // Just log the email send
         await updateDoc(doc(db, "invoices", id), {
           emailSentAt: new Date().toISOString(),
           emailSentTo: emailToSend,

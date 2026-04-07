@@ -26,6 +26,7 @@ import {
   Chip,
   MenuItem,
   Select,
+  InputAdornment,
   Box,
   Card,
   CardContent,
@@ -51,6 +52,7 @@ import PictureAsPdfIcon from "@mui/icons-material/PictureAsPdf";
 import DeleteIcon from "@mui/icons-material/Delete";
 import PaymentIcon from "@mui/icons-material/Payment";
 import SortIcon from "@mui/icons-material/Sort";
+import SearchIcon from "@mui/icons-material/Search";
 import GrassIcon from "@mui/icons-material/Grass";
 import SpeedIcon from "@mui/icons-material/Speed";
 import PersonAddIcon from "@mui/icons-material/PersonAdd";
@@ -62,9 +64,10 @@ import moment from "moment";
 import generateInvoicePDF from "./pdf/generateInvoicePDF";
 import { markAsViewed } from './useNotificationCounts';
 import { useAuth } from './AuthProvider';
+import { logAction, AUDIT_ACTIONS } from './utils/auditLog';
 
 export default function InvoicesDashboard() {
-  const { user } = useAuth();
+  const { user, userRole } = useAuth();
   const [invoices, setInvoices] = useState([]);
   const [sortedInvoices, setSortedInvoices] = useState([]);
   const [sortOrder, setSortOrder] = useState("newest");
@@ -311,7 +314,11 @@ export default function InvoicesDashboard() {
             notes: "Created when invoice marked as Paid from dashboard",
             receiptGenerated: false,
             createdAt: new Date().toISOString(),
+            createdBy: user?.uid || null,
+            createdByName: user?.displayName || user?.email || "Unknown",
+            source: "invoices_dashboard",
           });
+          await logAction(AUDIT_ACTIONS.PAYMENT_CREATED, { clientName: invoiceData.clientName, amount: total, source: 'invoices_dashboard', note: 'Invoice marked as Paid' }, user, userRole);
         }
 
         // ✅ Auto-complete the related job if it exists
@@ -495,7 +502,11 @@ export default function InvoicesDashboard() {
           notes: `Quick Weed Invoice - ${services.join(", ")}`,
           receiptGenerated: false,
           createdAt: new Date().toISOString(),
+          createdBy: user?.uid || null,
+          createdByName: user?.displayName || user?.email || "Unknown",
+          source: "quick_weed_invoice",
         });
+        await logAction(AUDIT_ACTIONS.PAYMENT_CREATED, { clientName: customer.name, amount: total, source: 'quick_weed_invoice', note: 'Quick Weed Invoice payment' }, user, userRole);
       }
 
             // Create calendar entry to show work was done
@@ -909,15 +920,25 @@ export default function InvoicesDashboard() {
     }
   };
 
-  // Apply date filters
+  // Search term state for client name filter
+  const [clientSearch, setClientSearch] = React.useState("");
+
+  // Apply date filters + client search
   const filteredInvoices = sortedInvoices.filter((inv) => {
     const invDate = getDateFromInvoice(inv);
-    if (!invDate || isNaN(invDate.getTime())) return true; // Show if no date
-    
-    const filterStart = new Date(filters.startDate);
-    const filterEnd = new Date(filters.endDate);
-    
-    return invDate >= filterStart && invDate <= filterEnd;
+    const dateOk = !invDate || isNaN(invDate.getTime()) || (() => {
+      const filterStart = new Date(filters.startDate);
+      const filterEnd = new Date(filters.endDate);
+      return invDate >= filterStart && invDate <= filterEnd;
+    })();
+    if (!dateOk) return false;
+    if (clientSearch.trim()) {
+      const search = clientSearch.trim().toLowerCase();
+      const nameMatch = (inv.clientName || inv.customerName || "").toLowerCase().includes(search);
+      const descMatch = (inv.description || "").toLowerCase().includes(search);
+      if (!nameMatch && !descMatch) return false;
+    }
+    return true;
   });
 
   return (
@@ -929,6 +950,20 @@ export default function InvoicesDashboard() {
         </Typography>
 
         <Box sx={{ display: "flex", gap: 2, flexWrap: "wrap", alignItems: "center" }}>
+          <TextField
+            size="small"
+            placeholder="Search client or description..."
+            value={clientSearch}
+            onChange={(e) => setClientSearch(e.target.value)}
+            sx={{ minWidth: { xs: "100%", sm: 240 } }}
+            InputProps={{
+              startAdornment: (
+                <InputAdornment position="start">
+                  <SearchIcon fontSize="small" />
+                </InputAdornment>
+              ),
+            }}
+          />
           <Button
             variant="contained"
             color="success"

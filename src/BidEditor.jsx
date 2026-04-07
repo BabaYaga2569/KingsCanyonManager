@@ -2,6 +2,8 @@ import React, { useEffect, useState, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { doc, getDoc, updateDoc, collection, query, where, getDocs } from "firebase/firestore";
 import { db } from "./firebase";
+import { useAuth } from "./AuthProvider";
+import { logAction, AUDIT_ACTIONS } from "./utils/auditLog";
 import {
   Container,
   Typography,
@@ -28,6 +30,7 @@ import { sendBidEmail } from "./emailService";
 export default function BidEditor() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const { user, userRole } = useAuth();
   const [bid, setBid] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -406,6 +409,7 @@ export default function BidEditor() {
         contractorSignedAt,
         updatedAt: new Date().toISOString(),
       });
+      await logAction(AUDIT_ACTIONS.BID_UPDATED, { bidId: id, clientName: bid.customerName, amount: bid.amount }, user, userRole);
       
       await Swal.fire("Saved", "Bid updated successfully.", "success");
       navigate("/bids");
@@ -682,6 +686,7 @@ export default function BidEditor() {
         { ...bid, id },
         pdfBase64
       );
+      await logAction(AUDIT_ACTIONS.BID_EMAIL_SENT, { bidId: id, clientName: bid.customerName, emailTo: emailToSend }, user, userRole);
       
       // Update bid status
       await updateDoc(doc(db, "bids", id), {

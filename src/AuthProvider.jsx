@@ -135,6 +135,18 @@ export const AuthProvider = ({ children }) => {
     return <Login onLoginSuccess={(user) => setUser(user)} />;
   }
 
+  // ✅ Role-loading guard: if user is set but role hasn't loaded from
+  // Firestore yet, hold on the spinner — never render the app with a
+  // null role or permissions will be wide open.
+  if (user && userRole === null && !isPublicPage) {
+    return (
+      <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', gap: 2 }}>
+        <CircularProgress size={60} />
+        <Typography variant="h6" color="text.secondary">Loading KCL Manager...</Typography>
+      </Box>
+    );
+  }
+
   // User is authenticated OR on a public page - show app
   return (
     <AuthContext.Provider value={value}>

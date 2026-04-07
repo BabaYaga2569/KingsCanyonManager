@@ -28,6 +28,7 @@ import {
   FormControlLabel,
   Radio,
   TextField,
+  InputAdornment,
   Alert,
   Checkbox,
   FormGroup,
@@ -48,6 +49,7 @@ import { db } from "./firebase";
 import { useNavigate } from "react-router-dom";
 import Swal from "sweetalert2";
 import SortIcon from "@mui/icons-material/Sort";
+import SearchIcon from "@mui/icons-material/Search";
 import SendIcon from "@mui/icons-material/Send";
 import EditIcon from "@mui/icons-material/Edit";
 import DeleteIcon from "@mui/icons-material/Delete";
@@ -69,6 +71,7 @@ export default function ContractsDashboard() {
   const [sortOrder, setSortOrder] = useState("newest");
   const [selectedYear, setSelectedYear] = useState("all");
   const [loading, setLoading] = useState(true);
+  const [clientSearch, setClientSearch] = useState("");
 
   // Send for Signature dialog
   const [sendDialogOpen, setSendDialogOpen] = useState(false);
@@ -552,12 +555,33 @@ export default function ContractsDashboard() {
   }
 
   // ============================================
+  // Client search filter
+  const displayedContracts = clientSearch.trim()
+    ? sortedContracts.filter((c) =>
+        (c.clientName || c.customerName || "").toLowerCase().includes(clientSearch.trim().toLowerCase())
+      )
+    : sortedContracts;
+
   // SORT / YEAR FILTER (shared)
   // ============================================
   const SortYearControls = () => (
     <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mb: 3, flexWrap: "wrap", gap: 2 }}>
-      <Typography variant="h5">Contracts Dashboard ({sortedContracts.length})</Typography>
+      <Typography variant="h5">Contracts Dashboard ({displayedContracts.length})</Typography>
       <Box sx={{ display: "flex", gap: 2, flexWrap: "wrap" }}>
+        <TextField
+          size="small"
+          placeholder="Search client..."
+          value={clientSearch}
+          onChange={(e) => setClientSearch(e.target.value)}
+          sx={{ minWidth: { xs: "100%", sm: 220 } }}
+          InputProps={{
+            startAdornment: (
+              <InputAdornment position="start">
+                <SearchIcon fontSize="small" />
+              </InputAdornment>
+            ),
+          }}
+        />
         <FormControl size="small" sx={{ minWidth: 160 }}>
           <InputLabel id="year-label">Year</InputLabel>
           <Select labelId="year-label" value={selectedYear} label="Year" onChange={(e) => setSelectedYear(e.target.value)}>
@@ -860,7 +884,7 @@ export default function ContractsDashboard() {
         <SortYearControls />
 
         <Box sx={{ display: "flex", flexDirection: "column", gap: 2, mt: 2 }}>
-          {sortedContracts.map((contract) => (
+          {displayedContracts.map((contract) => (
             <Card 
               key={contract.id} 
               sx={{ 
@@ -959,7 +983,7 @@ export default function ContractsDashboard() {
             </TableRow>
           </TableHead>
           <TableBody>
-            {sortedContracts.map((contract) => (
+            {displayedContracts.map((contract) => (
               <TableRow 
                 key={contract.id}
                 sx={{

@@ -360,7 +360,7 @@ exports.sendEmployeeInvite = functions.https.onCall(async (data, context) => {
 
     // Get company settings for the email
     const settings = await getSettings();
-    const appUrl = 'https://kcl-manager-test.web.app'; // Update for production
+    const appUrl = 'https://landscape-manager-8dad0.web.app';
     const inviteUrl = `${appUrl}/public/invite/${token}`;
 
     // Send invite email

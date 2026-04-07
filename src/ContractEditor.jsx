@@ -2,6 +2,8 @@ import React, { useEffect, useRef, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { doc, getDoc, updateDoc, collection, query, where, getDocs } from "firebase/firestore";
 import { db } from "./firebase";
+import { useAuth } from "./AuthProvider";
+import { logAction, AUDIT_ACTIONS } from "./utils/auditLog";
 import {
   Container,
   Typography,
@@ -30,6 +32,7 @@ const COMPANY = {
 const ContractEditor = () => {
   const { id } = useParams();
   const navigate = useNavigate();
+  const { user, userRole } = useAuth();
   const [contract, setContract] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -196,6 +199,7 @@ const ContractEditor = () => {
         contractorSignedAt,
         updatedAt: new Date().toISOString(),
       });
+      await logAction(AUDIT_ACTIONS.CONTRACT_UPDATED, { contractId: id, clientName: contract.clientName, amount: contract.amount }, user, userRole);
       Swal.fire("Saved", "Contract updated successfully.", "success");
     } catch (e) {
       console.error("Error saving contract:", e);
@@ -585,6 +589,7 @@ const ContractEditor = () => {
         { ...contract, id },
         pdfBase64
       );
+      await logAction(AUDIT_ACTIONS.CONTRACT_EMAIL_SENT, { contractId: id, clientName: contract.clientName, emailTo: emailToSend }, user, userRole);
       
       // Update contract status if still Pending
       if (contract.status === "Pending") {

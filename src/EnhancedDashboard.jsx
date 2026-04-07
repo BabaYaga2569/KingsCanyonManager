@@ -123,13 +123,19 @@ const EnhancedDashboard = () => {
         }
       });
 
-      // Load expenses → materials per jobId
+      // Load expenses → split into KCL overhead and client pass-through per jobId
       const expensesSnap = await getDocs(collection(db, 'expenses'));
-      const expensesByJob = {};
+      const expensesByJob = {};       // KCL overhead only (affects profit)
+      const billableByJob = {};       // Client pass-through (does NOT reduce profit)
       expensesSnap.docs.forEach(d => {
         const data = d.data();
         if (data.jobId) {
-          expensesByJob[data.jobId] = (expensesByJob[data.jobId] || 0) + parseFloat(data.amount || 0);
+          const amt = parseFloat(data.amount || 0);
+          if (data.billableToClient === true) {
+            billableByJob[data.jobId] = (billableByJob[data.jobId] || 0) + amt;
+          } else {
+            expensesByJob[data.jobId] = (expensesByJob[data.jobId] || 0) + amt;
+          }
         }
       });
 
@@ -156,18 +162,21 @@ const EnhancedDashboard = () => {
 
       // Calculate profit per job
       const profitRows = jobs.map(job => {
-        const revenue  = invoicesByJob[job.id] || parseFloat(job.amount || 0);
-        const materials = expensesByJob[job.id] || parseFloat(job.totalExpenses || 0);
-        const labor    = laborByJob[job.id]?.cost || 0;
-        const laborHrs = laborByJob[job.id]?.hours || 0;
-        const profit   = revenue - materials - labor;
-        const margin   = revenue > 0 ? ((profit / revenue) * 100) : null;
+        const revenue    = invoicesByJob[job.id] || parseFloat(job.amount || 0);
+        const kclMats    = expensesByJob[job.id] || 0;   // KCL overhead only
+        const billable   = billableByJob[job.id] || 0;   // pass-through (client pays)
+        const materials  = kclMats + billable;           // total shown in Materials column
+        const labor      = laborByJob[job.id]?.cost || 0;
+        const laborHrs   = laborByJob[job.id]?.hours || 0;
+        const profit     = revenue - kclMats - labor;    // billable excluded from profit calc
+        const margin     = revenue > 0 ? ((profit / revenue) * 100) : null;
         return {
           id: job.id,
           clientName: job.clientName || 'Unknown',
           status: job.status || 'Pending',
           revenue,
           materials,
+          billable,
           labor,
           laborHrs,
           profit,

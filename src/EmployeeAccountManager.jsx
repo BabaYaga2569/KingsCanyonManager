@@ -20,6 +20,8 @@ import {
   Work as WorkIcon,
 } from '@mui/icons-material';
 import { db, auth } from './firebase';
+import { useAuth } from './AuthProvider';
+import { logAction, AUDIT_ACTIONS } from './utils/auditLog';
 import {
   collection, getDocs, doc, setDoc, updateDoc, deleteDoc,
   query, where,
@@ -109,6 +111,7 @@ const EmploymentFields = ({ form, setForm }) => (
 );
 
 const EmployeeAccountManager = ({ currentUser, currentUserRole }) => {
+  const { user, userRole } = useAuth();
   const [employees, setEmployees]       = useState([]);
   const [loading, setLoading]           = useState(true);
   const [filter, setFilter]             = useState('active');
@@ -225,6 +228,7 @@ const EmployeeAccountManager = ({ currentUser, currentUserRole }) => {
         cancelledAt: new Date().toISOString(),
         cancelledBy: currentUser.uid,
       });
+      await logAction(AUDIT_ACTIONS.INVITE_CANCELLED, { inviteId: invite.id, inviteeName: invite.name, inviteeEmail: invite.email }, user, userRole);
       Swal.fire({ icon: 'success', title: 'Invite Cancelled', timer: 1500, showConfirmButton: false });
       loadPendingInvites();
     } catch (err) {
@@ -441,6 +445,7 @@ const EmployeeAccountManager = ({ currentUser, currentUserRole }) => {
         updatedAt: new Date().toISOString(),
         updatedBy: currentUser.uid,
       });
+      await logAction(AUDIT_ACTIONS.EMPLOYEE_UPDATED, { employeeId: selectedEmployee.id, employeeName: formData.name, role: formData.role }, user, userRole);
       Swal.fire({ icon: 'success', title: 'Employee Updated!', timer: 1500, showConfirmButton: false });
       handleCloseDialog();
       loadEmployees();
@@ -470,6 +475,7 @@ const EmployeeAccountManager = ({ currentUser, currentUserRole }) => {
       updatedAt: new Date().toISOString(),
       ...(newStatus ? {} : { inactivatedAt: new Date().toISOString() }),
     });
+    await logAction(newStatus ? AUDIT_ACTIONS.EMPLOYEE_ACTIVATED : AUDIT_ACTIONS.EMPLOYEE_DEACTIVATED, { employeeId: employee.id, employeeName: employee.name }, user, userRole);
     Swal.fire({ icon: 'success', title: newStatus ? 'Enabled!' : 'Disabled!', timer: 1500, showConfirmButton: false });
     loadEmployees();
   };
@@ -509,6 +515,7 @@ const EmployeeAccountManager = ({ currentUser, currentUserRole }) => {
 
       if (result.isConfirmed) {
         await deleteDoc(doc(db, 'users', employee.id));
+        await logAction(AUDIT_ACTIONS.EMPLOYEE_DELETED, { employeeId: employee.id, employeeName: employee.name, email: employee.email }, user, userRole);
         Swal.fire({
           icon: 'success', title: 'Deleted!',
           html: `<p>${employee.name} deleted.</p><p style="color:orange;">⚠️ ${timeCount + payCount} records are now orphaned.</p>`,

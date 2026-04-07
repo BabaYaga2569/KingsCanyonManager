@@ -11,6 +11,7 @@ import VisibilityOffIcon from '@mui/icons-material/VisibilityOff';
 import { db } from './firebase';
 import { doc, getDoc } from 'firebase/firestore';
 import { getFunctions, httpsCallable } from 'firebase/functions';
+import { getAuth, signOut } from 'firebase/auth';
 
 const functions = getFunctions();
 const acceptInviteFn = httpsCallable(functions, 'acceptEmployeeInvite');
@@ -63,6 +64,8 @@ export default function InviteSignup() {
       setSubmitting(true);
       setError('');
       await acceptInviteFn({ token, password });
+      // Sign out immediately — ensures a clean login with correct role
+      try { await signOut(getAuth()); } catch (e) { /* ignore */ }
       setDone(true);
     } catch (err) {
       console.error('Error accepting invite:', err);
@@ -99,6 +102,9 @@ export default function InviteSignup() {
 
   // ── SUCCESS ──────────────────────────────────────────────────────────────────
   if (done) {
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+    const isAndroid = /Android/.test(navigator.userAgent);
+
     return (
       <Container maxWidth="sm" sx={{ mt: 8 }}>
         <Paper sx={{ p: 4, textAlign: 'center' }}>
@@ -108,9 +114,36 @@ export default function InviteSignup() {
             Your account is ready. Log in with your email address and the password you just set.
             You will be asked to sign a company NDA before accessing the app.
           </Typography>
+
+          {/* Home screen tip */}
+          <Box sx={{ bgcolor: '#e3f2fd', borderRadius: 2, p: 2, mb: 3, textAlign: 'left' }}>
+            <Typography variant="subtitle2" fontWeight="bold" sx={{ mb: 1 }}>
+              📱 Add KCL Manager to your Home Screen
+            </Typography>
+            {isIOS && (
+              <Box component="ol" sx={{ m: 0, pl: 2 }}>
+                <Typography component="li" variant="body2" sx={{ mb: 0.5 }}>Tap the <strong>Share button</strong> at the bottom of Safari (box with arrow)</Typography>
+                <Typography component="li" variant="body2" sx={{ mb: 0.5 }}>Scroll down and tap <strong>"Add to Home Screen"</strong></Typography>
+                <Typography component="li" variant="body2" sx={{ mb: 0.5 }}>Name it <strong>KCL Manager</strong> and tap <strong>Add</strong></Typography>
+              </Box>
+            )}
+            {isAndroid && (
+              <Box component="ol" sx={{ m: 0, pl: 2 }}>
+                <Typography component="li" variant="body2" sx={{ mb: 0.5 }}>Tap the <strong>three dots menu</strong> in Chrome (top right)</Typography>
+                <Typography component="li" variant="body2" sx={{ mb: 0.5 }}>Tap <strong>"Add to Home screen"</strong></Typography>
+                <Typography component="li" variant="body2" sx={{ mb: 0.5 }}>Name it <strong>KCL Manager</strong> and tap <strong>Add</strong></Typography>
+              </Box>
+            )}
+            {!isIOS && !isAndroid && (
+              <Typography variant="body2" color="text.secondary">
+                On your phone, use your browser menu to find <strong>"Add to Home Screen"</strong> so you can open KCL Manager like an app anytime.
+              </Typography>
+            )}
+          </Box>
+
           <Button
             variant="contained" size="large" fullWidth
-            onClick={() => navigate('/')}
+            onClick={() => { window.location.href = '/'; }}
           >
             Go to Login
           </Button>

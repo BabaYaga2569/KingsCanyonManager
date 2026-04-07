@@ -1,31 +1,31 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    
+
     // Helper function to check if user is authenticated
     function isAuthenticated() {
       return request.auth != null;
     }
-    
+
     // Helper function to check if user has god or admin role (FIXED: handles null)
     function isGodOrAdmin() {
-      return isAuthenticated() && 
+      return isAuthenticated() &&
         exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['god', 'admin'];
     }
-    
+
     // Helper function to check if user is god (owner) (FIXED: handles null)
     function isGod() {
-      return isAuthenticated() && 
+      return isAuthenticated() &&
         exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'god';
     }
-    
+
     // Helper to check if accessing own data
     function isOwnData(userId) {
       return isAuthenticated() && request.auth.uid == userId;
     }
-    
+
     // FIXED: Single argument — checks resource.data[tokenField] against query token
     function hasValidToken(tokenField) {
       return request.auth == null &&
@@ -33,7 +33,7 @@ service cloud.firestore {
              resource.data[tokenField] != null &&
              resource.data[tokenField] == request.query.token;
     }
-    
+
     // ============================================
     // USERS COLLECTION (Employee Account Manager)
     // ============================================
@@ -41,58 +41,58 @@ service cloud.firestore {
       allow read: if isAuthenticated();
       allow create: if isGod();
       allow update: if isGod();
-      allow update: if isAuthenticated() && 
+      allow update: if isAuthenticated() &&
                       request.auth.uid == userId &&
                       (!('role' in request.resource.data) || request.resource.data.role == resource.data.role);
       allow delete: if isGod();
     }
-    
+
     // ============================================
-    // 🔐 BIDS COLLECTION - SECURE WITH TOKENS
+    // 🔒 BIDS COLLECTION - SECURE WITH TOKENS
     // ============================================
     match /bids/{bidId} {
       // Read: authenticated users OR valid signing token
       allow read: if isGodOrAdmin() || hasValidToken('signingToken');
-      
+
       // Write: only admin
       allow write: if isGodOrAdmin();
-      
+
       // Update: authenticated OR token holder (but only signature fields)
-      allow update: if isGodOrAdmin() || 
-        (hasValidToken('signingToken') && 
+      allow update: if isGodOrAdmin() ||
+        (hasValidToken('signingToken') &&
          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['customerSignature', 'customerSignedAt', 'status', 'signedBy']));
     }
-    
+
     // ============================================
-    // 🔐 CONTRACTS COLLECTION - SECURE WITH TOKENS
+    // 🔒 CONTRACTS COLLECTION - SECURE WITH TOKENS
     // ============================================
     match /contracts/{contractId} {
       // Read: authenticated users OR valid signing token
       allow read: if isGodOrAdmin() || hasValidToken('signingToken');
-      
+
       // Write: only admin
       allow write: if isGodOrAdmin();
-      
+
       // Update: authenticated OR token holder (but only signature fields)
-      allow update: if isGodOrAdmin() || 
-        (hasValidToken('signingToken') && 
+      allow update: if isGodOrAdmin() ||
+        (hasValidToken('signingToken') &&
          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['customerSignature', 'customerSignedAt', 'status', 'signedBy']));
     }
-    
+
     // ============================================
-    // 🔐 INVOICES COLLECTION - SECURE WITH TOKENS
+    // 🔒 INVOICES COLLECTION - SECURE WITH TOKENS
     // ============================================
     match /invoices/{invoiceId} {
       // Read: public (invoice IDs are unguessable - needed for payment portal)
       allow read: if true;
-      
+
       // Write: only admin
       allow write: if isGodOrAdmin();
-      
+
       // Update: admin only
       allow update: if isGodOrAdmin();
     }
-    
+
     // ============================================
     // JOBS COLLECTION - READ FOR DROPDOWN
     // ============================================
@@ -100,7 +100,7 @@ service cloud.firestore {
       allow read: if isAuthenticated();
       allow write: if isGodOrAdmin();
     }
-    
+
     // ============================================
     // CUSTOMERS COLLECTION - ADMIN ONLY
     // ============================================
@@ -108,14 +108,14 @@ service cloud.firestore {
       allow read: if isAuthenticated();        // crew needs this for GPS address lookup
       allow write: if isGodOrAdmin();
     }
-    
+
     // ============================================
     // EXPENSES COLLECTION - ADMIN ONLY
     // ============================================
     match /expenses/{expenseId} {
       allow read, write: if isGodOrAdmin();
     }
-    
+
     // ============================================
     // PAYMENTS COLLECTION - ADMIN ONLY
     // ============================================
@@ -124,7 +124,7 @@ service cloud.firestore {
       allow read: if true;
       allow write: if isGodOrAdmin();
     }
-    
+
     // ============================================
     // CREW PAYMENTS COLLECTION - Payroll
     // ============================================
@@ -132,28 +132,28 @@ service cloud.firestore {
       allow read: if isGodOrAdmin();
       allow create, update, delete: if isGodOrAdmin();
     }
-    
+
     // ============================================
     // SCHEDULES COLLECTION - ADMIN ONLY
     // ============================================
     match /schedules/{scheduleId} {
       allow read, write: if isGodOrAdmin();
     }
-    
+
     // ============================================
     // SCHEDULE COLLECTION (Legacy) - ADMIN ONLY
     // ============================================
     match /schedule/{scheduleId} {
       allow read, write: if isGodOrAdmin();
     }
-    
+
     // ============================================
     // CALENDAR COLLECTION - ADMIN ONLY
     // ============================================
     match /calendar/{calendarId} {
       allow read, write: if isGodOrAdmin();
     }
-    
+
     // ============================================
     // TIME CLOCK COLLECTION - OWN DATA ONLY
     // ============================================
@@ -163,33 +163,33 @@ service cloud.firestore {
       allow update: if isOwnData(timeClockId) || isGodOrAdmin();
       allow delete: if isGodOrAdmin();
     }
-    
+
     // ============================================
     // JOB TIME ENTRIES COLLECTION
     // ============================================
     match /job_time_entries/{entryId} {
       allow create: if isAuthenticated();
-      allow read: if isAuthenticated() && 
+      allow read: if isAuthenticated() &&
                     (resource.data.crewId == request.auth.uid || isGodOrAdmin());
-      allow update: if isAuthenticated() && 
+      allow update: if isAuthenticated() &&
                       (resource.data.crewId == request.auth.uid || isGodOrAdmin());
       allow delete: if isGodOrAdmin();
     }
-    
+
     // ============================================
     // NOTES COLLECTION - ADMIN ONLY
     // ============================================
     match /notes/{noteId} {
       allow read, write: if isGodOrAdmin();
     }
-    
+
     // ============================================
     // CREW COLLECTION (Legacy)
     // ============================================
     match /crew/{crewId} {
       allow read, write: if isGodOrAdmin();
     }
-    
+
     // ============================================
     // CREWS COLLECTION
     // ============================================
@@ -197,14 +197,14 @@ service cloud.firestore {
       allow read: if true;  // Public for NDA signing
       allow write: if isGodOrAdmin();
     }
-    
+
     // ============================================
     // EQUIPMENT COLLECTION - ADMIN ONLY
     // ============================================
     match /equipment/{equipmentId} {
       allow read, write: if isGodOrAdmin();
     }
-    
+
     // ============================================
     // NDA SIGNATURES COLLECTION
     // ============================================
@@ -213,7 +213,7 @@ service cloud.firestore {
       allow create: if isAuthenticated() && request.auth.uid == signatureId;
       allow read: if isAuthenticated() && request.auth.uid == signatureId;
     }
-    
+
     // ============================================
     // NOTIFICATIONS COLLECTION - OWN DATA ONLY
     // ============================================
@@ -221,14 +221,14 @@ service cloud.firestore {
       allow read: if isAuthenticated();
       allow write: if isGodOrAdmin();
     }
-    
+
     // ============================================
     // NOTIFICATION COUNTS COLLECTION
     // ============================================
     match /notificationCounts/{userId} {
       allow read, write: if isAuthenticated();
     }
-    
+
     // ============================================
     // SETTINGS COLLECTION
     // ============================================
@@ -236,14 +236,14 @@ service cloud.firestore {
       allow read: if isAuthenticated();
       allow write: if isGodOrAdmin();
     }
-    
+
     // ============================================
     // MAINTENANCE CONTRACTS COLLECTION - ADMIN ONLY
     // ============================================
     match /maintenance_contracts/{contractId} {
       allow read, write: if isGodOrAdmin();
     }
-    
+
     // ============================================
     // NOTIFICATION SETTINGS COLLECTION (SMS)
     // ============================================
@@ -251,7 +251,7 @@ service cloud.firestore {
       allow read: if isAuthenticated();
       allow write: if isGod();
     }
-    
+
     // ============================================
     // NOTIFICATIONS LOG COLLECTION (SMS History)
     // ============================================
@@ -262,19 +262,30 @@ service cloud.firestore {
 
     // ============================================
     // INVITES COLLECTION - Employee invite tokens
-    // Public read needed so InviteSignup page can
-    // validate the token without being logged in.
-    // All writes go through Cloud Functions (Admin SDK).
+    // Public read so InviteSignup can validate token
+    // without being logged in.
+    // Writes go through Cloud Functions (Admin SDK).
+    // God/Admin can update/delete for cancel & cleanup.
     // ============================================
     match /invites/{token} {
       allow read: if true;
       allow write: if false;
+      allow update: if isGodOrAdmin();
+      allow delete: if isGodOrAdmin();
     }
 
     // ============================================
     // EMAIL LOG COLLECTION
     // ============================================
     match /email_log/{logId} {
+      allow read: if isGodOrAdmin();
+      allow create: if isAuthenticated();
+    }
+
+    // ============================================
+    // AUDIT LOG COLLECTION
+    // ============================================
+    match /audit_log/{logId} {
       allow read: if isGodOrAdmin();
       allow create: if isAuthenticated();
     }

@@ -112,13 +112,17 @@ export default async function generateBidPDF(bid, logoDataUrl = null) {
 
   // Helper to write label-value pairs
   const writeLabelValue = (label, value) => {
-    checkPageBreak(25);
+    checkPageBreak(30);
     doc.setFont("helvetica", "bold");
+    doc.setFontSize(11);
     doc.setTextColor(0);
+    // Draw label on its own line
     doc.text(`${label}:`, MARGIN, y);
+    y += 16;
+    // Draw value indented on next line
     doc.setFont("helvetica", "normal");
     const textValue = value || "N/A";
-    doc.text(`${textValue}`, 140, y, { maxWidth: W - 180 });
+    doc.text(`${textValue}`, MARGIN + 12, y, { maxWidth: W - 100 });
     y += 20;
   };
 

@@ -33,11 +33,14 @@ import {
   InputLabel,
   Badge,
   Chip,
+  TextField,
+  InputAdornment,
 } from "@mui/material";
 import MenuIcon from "@mui/icons-material/Menu";
 import CloseIcon from "@mui/icons-material/Close";
 import LogoutIcon from "@mui/icons-material/Logout";
 import SortIcon from "@mui/icons-material/Sort";
+import SearchIcon from "@mui/icons-material/Search";
 import DownloadIcon from "@mui/icons-material/Download";
 import DescriptionIcon from "@mui/icons-material/Description";
 import Swal from "sweetalert2";
@@ -98,12 +101,14 @@ import JobExpenses from "./JobExpenses";
 import NotesManager from "./NotesManager"; // â† ADDED: Notes Manager
 import NotificationSettings from "./NotificationSettings"; // NEW: SMS Notification Settings
 import EmployeeAccountManager from './EmployeeAccountManager';
+import AuditLog from './AuditLog';
 import { createFullJobPackage } from "./utils/createFullJobPackage";
 import { exportBidsToExcel, exportBidToWord, exportAllBidsToWord } from "./utils/exportUtils";
 import generateBidPDF from "./pdf/generateBidPDF";
 import ContractSigningPage from "./ContractSigningPage";
 import BidSigningPage from './BidSigningPage';
 import PaymentPortal from "./PaymentPortal";
+import InviteSignup from "./InviteSignup";
 import BidEditor from "./BidEditor";
 
 // REFRESH SYSTEM IMPORTS
@@ -125,6 +130,7 @@ function BidsList() {
   const [sortOrder, setSortOrder] = useState("newest");
   const [logoDataUrl, setLogoDataUrl] = useState(null);
   const [showArchived, setShowArchived] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -272,6 +278,13 @@ function BidsList() {
   const activeBids = bids.filter(b => b.status !== 'archived');
   const archivedBids = bids.filter(b => b.status === 'archived');
 
+  // Search filter applied on top of sort/archive
+  const displayedBids = searchQuery.trim()
+    ? sortedBids.filter(b =>
+        (b.customerName || '').toLowerCase().includes(searchQuery.trim().toLowerCase())
+      )
+    : sortedBids;
+
   // Bids expiring within 7 days (not yet archived, not signed)
   const expiringSoon = activeBids.filter(b => {
     if (b.clientSignature && b.contractorSignature) return false;
@@ -326,6 +339,21 @@ function BidsList() {
           </Select>
         </FormControl>
 
+        <TextField
+          size="small"
+          placeholder="Search by client name…"
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          InputProps={{
+            startAdornment: (
+              <InputAdornment position="start">
+                <SearchIcon fontSize="small" />
+              </InputAdornment>
+            ),
+          }}
+          sx={{ minWidth: 220 }}
+        />
+
         {!showArchived && (
           <>
             <Button variant="outlined" startIcon={<DownloadIcon />} onClick={() => exportBidsToExcel(sortedBids)} size="small">
@@ -349,7 +377,7 @@ function BidsList() {
 
       {/* MOBILE VIEW */}
       <Box sx={{ display: { xs: 'block', md: 'none' } }}>
-        {sortedBids.map((bid) => {
+        {displayedBids.map((bid) => {
           const days = daysSinceEdit(bid);
           const daysLeft = days !== null ? 30 - days : null;
           const isExpiringSoon = !showArchived && daysLeft !== null && daysLeft <= 7 && daysLeft > 0;
@@ -396,12 +424,12 @@ function BidsList() {
             </Box>
           );
         })}
-        {sortedBids.length === 0 && (
+        {displayedBids.length === 0 && (
           <Box sx={{ textAlign: 'center', py: 8 }}>
             <Typography variant="h6" color="text.secondary">
-              {showArchived ? 'No archived bids' : 'No Bids Yet'}
+              {searchQuery.trim() ? `No bids matching "${searchQuery}"` : showArchived ? 'No archived bids' : 'No Bids Yet'}
             </Typography>
-            {!showArchived && (
+            {!showArchived && !searchQuery.trim() && (
               <Button variant="contained" onClick={() => navigate('/create-bid')} sx={{ mt: 2 }}>Create Bid</Button>
             )}
           </Box>
@@ -422,7 +450,7 @@ function BidsList() {
             </tr>
           </thead>
           <tbody>
-            {sortedBids.map((bid) => {
+            {displayedBids.map((bid) => {
               const days = daysSinceEdit(bid);
               const daysLeft = days !== null ? 30 - days : null;
               const isExpiringSoon = !showArchived && daysLeft !== null && daysLeft <= 7 && daysLeft > 0;
@@ -469,13 +497,13 @@ function BidsList() {
                 </tr>
               );
             })}
-            {sortedBids.length === 0 && (
+            {displayedBids.length === 0 && (
               <tr>
                 <td colSpan={showArchived ? 6 : 5} style={{ padding: 40, textAlign: 'center' }}>
                   <Typography variant="h6" color="text.secondary">
-                    {showArchived ? 'No archived bids' : 'No Bids Yet'}
+                    {searchQuery.trim() ? `No bids matching "${searchQuery}"` : showArchived ? 'No archived bids' : 'No Bids Yet'}
                   </Typography>
-                  {!showArchived && (
+                  {!showArchived && !searchQuery.trim() && (
                     <Button variant="contained" onClick={() => navigate('/create-bid')} sx={{ mt: 2 }}>Create Bid</Button>
                   )}
                 </td>
@@ -624,6 +652,9 @@ function AppContent() {
       { label: "Equipment", path: "/equipment-manager", notificationKey: null },
       { label: "Employees", path: "/employees", notificationKey: null },
       { label: "SMS Notifications", path: "/notification-settings", notificationKey: null },
+      ...(userRole === 'god' || userRole === 'admin' ? [
+        { label: "Audit Log", path: "/audit-log", notificationKey: null },
+      ] : []),
       { label: "My Profile", path: "/profile", notificationKey: null },
     ];
   }
@@ -878,6 +909,7 @@ function AppContent() {
         <Route path="/maintenance" element={<MaintenanceDashboard />} />
         <Route path="/maintenance/:id" element={<MaintenanceEditor />} />
         <Route path="/notification-settings" element={<NotificationSettings />} />
+        <Route path="/audit-log" element={<AuditLog />} />
         <Route path="/payment-tracker/:id" element={<PaymentTracker />} />
         <Route path="/payments-dashboard" element={<PaymentsDashboard />} />
         <Route path="/crew-manager" element={<CrewManager />} />
@@ -911,6 +943,7 @@ function AppContent() {
         <Route path="/public/sign/:contractId" element={<ContractSigningPage />} />
         <Route path="/sign-bid/:bidId" element={<BidSigningPage />} />
         <Route path="/public/pay/:invoiceId" element={<PaymentPortal />} />
+        <Route path="/public/invite/:token" element={<InviteSignup />} />
       </Routes>
     </>
   );

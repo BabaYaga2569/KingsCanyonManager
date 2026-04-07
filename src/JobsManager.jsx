@@ -9,6 +9,8 @@ import {
 } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { db, storage } from "./firebase";
+import { useAuth } from "./AuthProvider";
+import { logAction, AUDIT_ACTIONS } from "./utils/auditLog";
 import { useNavigate } from "react-router-dom";
 import {
   Box,
@@ -53,6 +55,7 @@ import Swal from "sweetalert2";
 import { markAsViewed } from "./useNotificationCounts";
 
 export default function JobsManager() {
+  const { user, userRole } = useAuth();
   const [jobs, setJobs] = useState([]);
   const [employees, setEmployees] = useState([]);
   const [sortedJobs, setSortedJobs] = useState([]);
@@ -387,7 +390,9 @@ export default function JobsManager() {
 
   const handleStatusChange = async (jobId, newStatus) => {
     try {
+      const job = jobs.find(j => j.id === jobId);
       await updateDoc(doc(db, "jobs", jobId), { status: newStatus });
+      await logAction(AUDIT_ACTIONS.JOB_STATUS_CHANGED, { jobId, clientName: job?.clientName, oldStatus: job?.status, newStatus }, user, userRole);
       setJobs((prev) =>
         prev.map((job) =>
           job.id === jobId ? { ...job, status: newStatus } : job
@@ -400,7 +405,9 @@ export default function JobsManager() {
 
   const handleJobTypeChange = async (jobId, newJobType) => {
     try {
+      const job = jobs.find(j => j.id === jobId);
       await updateDoc(doc(db, "jobs", jobId), { jobType: newJobType });
+      await logAction(AUDIT_ACTIONS.JOB_TYPE_CHANGED, { jobId, clientName: job?.clientName, newJobType }, user, userRole);
       setJobs((prev) =>
         prev.map((job) =>
           job.id === jobId ? { ...job, jobType: newJobType } : job
@@ -435,6 +442,7 @@ export default function JobsManager() {
 
     try {
       await deleteDoc(doc(db, "jobs", jobId));
+      await logAction(AUDIT_ACTIONS.JOB_DELETED, { jobId, clientName }, user, userRole);
       setJobs((prev) => prev.filter((j) => j.id !== jobId));
       Swal.fire("Deleted!", "Job has been removed.", "success");
     } catch (error) {

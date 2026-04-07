@@ -5,6 +5,8 @@ import React, { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { doc, getDoc, collection, getDocs, addDoc, updateDoc, deleteDoc, query, where } from "firebase/firestore";
 import { db } from "./firebase";
+import { useAuth } from "./AuthProvider";
+import { logAction, AUDIT_ACTIONS } from "./utils/auditLog";
 import {
   Container,
   Typography,
@@ -65,6 +67,7 @@ export default function PaymentTracker() {
   const navigate = useNavigate();
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down("md"));
+  const { user, userRole } = useAuth();
 
   const [loading, setLoading] = useState(true);
   const [invoice, setInvoice] = useState(null);
@@ -170,9 +173,14 @@ export default function PaymentTracker() {
         notes: paymentForm.notes,
         receiptGenerated: paymentForm.generateReceipt,
         createdAt: new Date().toISOString(),
+        createdBy: user?.uid || null,
+        createdByName: user?.displayName || user?.email || "Unknown",
+        createdByRole: userRole || null,
+        source: "payment_tracker",
       };
 
       const paymentRef = await addDoc(collection(db, "payments"), paymentData);
+      await logAction(AUDIT_ACTIONS.PAYMENT_CREATED, { paymentId: paymentRef.id, clientName: invoice.clientName, amount: paymentAmount, method: paymentForm.paymentMethod }, user, userRole);
 
       // Update invoice status
       await updateInvoiceStatus();
