@@ -6,6 +6,8 @@ import {
   deleteDoc,
   doc,
   serverTimestamp,
+  query,
+  where,
 } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { db, storage } from "./firebase";
@@ -391,6 +393,55 @@ export default function JobsManager() {
   const handleStatusChange = async (jobId, newStatus) => {
     try {
       const job = jobs.find(j => j.id === jobId);
+
+      // ── Gate: cannot activate without a schedule ─────────────────────────
+      if (newStatus === 'Active') {
+        // Check schedules collection for any entry linked to this job's contract
+        let hasSchedule = false;
+
+        if (job?.contractId) {
+          const schedSnap = await getDocs(
+            query(collection(db, 'schedules'), where('contractId', '==', job.contractId))
+          );
+          if (!schedSnap.empty) hasSchedule = true;
+        }
+
+        // Also check by jobId directly in case schedules link that way
+        if (!hasSchedule && job?.id) {
+          const schedSnap2 = await getDocs(
+            query(collection(db, 'schedules'), where('jobId', '==', job.id))
+          );
+          if (!schedSnap2.empty) hasSchedule = true;
+        }
+
+        // Also check if the job itself has a scheduledDate set
+        if (!hasSchedule && job?.scheduledDate) hasSchedule = true;
+
+        if (!hasSchedule) {
+          Swal.fire({
+            icon: 'warning',
+            title: 'Cannot Activate Job',
+            html: `
+              <p>This job must be scheduled before it can be activated.</p>
+              <p style="margin-top:12px; color:#555;">
+                <strong>Required:</strong> Go to <strong>Schedule</strong>, assign a date and crew to this job, then come back to activate it.
+              </p>
+              <p style="margin-top:8px; color:#1565c0; font-size:0.9em;">
+                This ensures crew always has a confirmed schedule before showing up on site.
+              </p>
+            `,
+            confirmButtonText: 'Go to Schedule',
+            showCancelButton: true,
+            cancelButtonText: 'OK',
+            confirmButtonColor: '#1565c0',
+          }).then(result => {
+            if (result.isConfirmed) window.location.href = '/schedule-dashboard';
+          });
+          return;
+        }
+      }
+      // ────────────────────────────────────────────────────────────────────
+
       await updateDoc(doc(db, "jobs", jobId), { status: newStatus });
       await logAction(AUDIT_ACTIONS.JOB_STATUS_CHANGED, { jobId, clientName: job?.clientName, oldStatus: job?.status, newStatus }, user, userRole);
       setJobs((prev) =>

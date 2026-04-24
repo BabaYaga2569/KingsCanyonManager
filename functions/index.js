@@ -1,8 +1,45 @@
 const functions = require('firebase-functions');
 const nodemailer = require('nodemailer');
 const admin = require('firebase-admin');
+const { Resend } = require('resend');
 
 admin.initializeApp();
+
+// ── Resend client (used for all customer/employee emails) ──────────────────
+// API key stored in Firebase Secret: RESEND_API_KEY
+// From address: Kings Canyon Landscaping <noreply@getkoaops.com>
+const RESEND_FROM = 'Kings Canyon Landscaping <noreply@getkoaops.com>';
+function getResendClient() {
+  const apiKey = process.env.RESEND_API_KEY;
+  if (!apiKey) throw new Error('RESEND_API_KEY secret not set');
+  return new Resend(apiKey);
+}
+
+/**
+ * Send an email via Resend
+ * @param {string} to - recipient email
+ * @param {string} subject - email subject
+ * @param {string} html - HTML body
+ * @param {Array} attachments - optional [{filename, content (Buffer), contentType}]
+ */
+async function sendViaResend(to, subject, html, attachments = []) {
+  const resend = getResendClient();
+  const payload = {
+    from: RESEND_FROM,
+    to,
+    subject,
+    html,
+  };
+  if (attachments.length > 0) {
+    payload.attachments = attachments.map(a => ({
+      filename: a.filename,
+      content: a.content, // Buffer or base64 string
+    }));
+  }
+  const result = await resend.emails.send(payload);
+  if (result.error) throw new Error(result.error.message || 'Resend error');
+  return result;
+}
 
 // ========================= CARRIER GATEWAY MAP =========================
 const CARRIER_GATEWAYS = {
@@ -57,11 +94,40 @@ async function sendEmailToSMS(transporter, fromEmail, toGateway, message) {
 async function sendToAllAdmins(settings, message, type, metadata = {}) {
   const adminPhones = settings.adminPhones || [];
 
-  if (adminPhones.length === 0) {
-    console.log('No admin phones configured');
-    return { success: false, reason: 'no_admins' };
+  // ── Pushover (preferred — always try first) ───────────────────────────────
+  const PUSHOVER_TOKEN = 'aka88i2ehjtm4r47d3zuqz7bhionvu';
+  const PUSHOVER_USER  = 'gnh1nvir8hovia25ohsdoq2ys8x1n3';
+
+  try {
+    const fetch = require('node-fetch');
+    const resp = await fetch('https://api.pushover.net/1/messages.json', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        token: PUSHOVER_TOKEN,
+        user:  PUSHOVER_USER,
+        message,
+        priority: '0',
+      }).toString(),
+    });
+    const result = await resp.json();
+    console.log('Pushover sent:', result.status === 1 ? 'OK' : JSON.stringify(result));
+
+    await admin.firestore().collection('notifications_log').add({
+      type,
+      message,
+      status: result.status === 1 ? 'sent' : 'failed',
+      channel: 'pushover',
+      sentAt: new Date().toISOString(),
+      metadata,
+    });
+
+    return { success: true, channel: 'pushover' };
+  } catch (err) {
+    console.error('Pushover error, falling back to SMS gateway:', err.message);
   }
 
+  // ── SMS-to-email gateway (fallback) ──────────────────────────────────────
   const transporter = createTransporter(settings.gmailEmail, settings.gmailAppPassword);
   const results = [];
 
@@ -286,7 +352,7 @@ function generateInviteToken() {
  * Creates an invite token in Firestore and emails the employee a signup link.
  * Called by admin from EmployeeAccountManager.
  */
-exports.sendEmployeeInvite = functions.https.onCall(async (data, context) => {
+exports.sendEmployeeInvite = functions.runWith({ secrets: ["RESEND_API_KEY"] }).https.onCall(async (data, context) => {
   console.log('>>> sendEmployeeInvite called for:', data.email);
 
   try {
@@ -363,38 +429,31 @@ exports.sendEmployeeInvite = functions.https.onCall(async (data, context) => {
     const appUrl = 'https://landscape-manager-8dad0.web.app';
     const inviteUrl = `${appUrl}/public/invite/${token}`;
 
-    // Send invite email
-    if (settings?.gmailConfigured && settings?.gmailEmail && settings?.gmailAppPassword) {
-      const transporter = createTransporter(settings.gmailEmail, settings.gmailAppPassword);
-
-      const mailOptions = {
-        from: `"Kings Canyon Landscaping" <${settings.gmailEmail}>`,
-        to: email,
-        subject: `You're invited to join Kings Canyon Landscaping`,
-        html: `
+    // Send invite email via Resend
+    try {
+      await sendViaResend(
+        email,
+        `You're invited to join Kings Canyon Landscaping`,
+        `
           <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
             <div style="background: #2e7d32; padding: 24px; text-align: center;">
               <h1 style="color: white; margin: 0;">KCL Manager</h1>
               <p style="color: #c8e6c9; margin: 8px 0 0;">Kings Canyon Landscaping</p>
             </div>
-
             <div style="padding: 32px 24px;">
               <h2 style="color: #212121;">Hi ${name},</h2>
               <p style="color: #546e7a; font-size: 16px;">
                 You've been invited to join the Kings Canyon Landscaping team on KCL Manager.
               </p>
-
               <div style="background: #f5f5f5; border-radius: 8px; padding: 16px; margin: 24px 0;">
                 <p style="margin: 4px 0;"><strong>Role:</strong> ${role === 'admin' ? 'Admin' : 'Crew Member'}</p>
                 <p style="margin: 4px 0;"><strong>Job Title:</strong> ${jobTitle || 'Crew Member'}</p>
                 <p style="margin: 4px 0;"><strong>Pay Type:</strong> ${employmentType === 'salary' ? 'Salary' : 'Hourly'}</p>
               </div>
-
               <p style="color: #546e7a;">
                 Click the button below to create your password and set up your account.
                 This link expires in <strong>72 hours</strong>.
               </p>
-
               <div style="text-align: center; margin: 32px 0;">
                 <a href="${inviteUrl}"
                    style="background: #2e7d32; color: white; padding: 14px 32px; border-radius: 6px;
@@ -402,31 +461,26 @@ exports.sendEmployeeInvite = functions.https.onCall(async (data, context) => {
                   Set Up My Account
                 </a>
               </div>
-
               <p style="color: #9e9e9e; font-size: 13px;">
                 If the button doesn't work, copy this link into your browser:<br/>
                 <a href="${inviteUrl}" style="color: #2e7d32;">${inviteUrl}</a>
               </p>
-
               <p style="color: #9e9e9e; font-size: 13px;">
                 After setting your password, you will be asked to sign a company NDA before accessing the app.
               </p>
             </div>
-
             <div style="background: #f5f5f5; padding: 16px; text-align: center;">
               <p style="color: #9e9e9e; font-size: 12px; margin: 0;">
                 Kings Canyon Landscaping LLC — Bullhead City, AZ
               </p>
             </div>
           </div>
-        `,
-      };
-
-      await transporter.sendMail(mailOptions);
-      transporter.close();
-      console.log('>>> Invite email sent to:', email);
-    } else {
-      console.warn('>>> Gmail not configured — invite token created but email not sent');
+        `
+      );
+      console.log('>>> Invite email sent via Resend to:', email);
+    } catch (emailErr) {
+      console.error('>>> Resend invite email failed:', emailErr.message);
+      // Don't throw — token was created successfully, log the failure
     }
 
     // Log the invite
@@ -448,6 +502,143 @@ exports.sendEmployeeInvite = functions.https.onCall(async (data, context) => {
     };
   } catch (error) {
     console.error('>>> sendEmployeeInvite error:', error);
+    if (error instanceof functions.https.HttpsError) throw error;
+    throw new functions.https.HttpsError('internal', error.message);
+  }
+});
+
+/**
+ * createEmployeeManually
+ * Creates a Firebase Auth account + Firestore user doc via Admin SDK.
+ * Does NOT sign out the calling user. Sends a welcome email with temp credentials.
+ * Sets mustChangePassword: true so they are forced to change on first login.
+ */
+exports.createEmployeeManually = functions.runWith({ secrets: ["RESEND_API_KEY"] }).https.onCall(async (data, context) => {
+  console.log('>>> createEmployeeManually called for:', data.email);
+
+  try {
+    if (!context.auth) {
+      throw new functions.https.HttpsError('unauthenticated', 'Must be logged in');
+    }
+
+    // Only god or admin can create employees manually
+    const callerDoc = await admin.firestore().collection('users').doc(context.auth.uid).get();
+    const callerRole = callerDoc.data()?.role;
+    if (!['god', 'admin'].includes(callerRole)) {
+      throw new functions.https.HttpsError('permission-denied', 'Only god or admin can create employees');
+    }
+
+    const {
+      name, email, tempPassword, role, jobTitle, phoneNumber,
+      employmentType, hourlyRate, annualSalary, paySchedule, requireGps,
+    } = data;
+
+    if (!name || !email || !tempPassword) {
+      throw new functions.https.HttpsError('invalid-argument', 'Name, email, and temp password are required');
+    }
+    if (tempPassword.length < 6) {
+      throw new functions.https.HttpsError('invalid-argument', 'Temp password must be at least 6 characters');
+    }
+
+    // Create Firebase Auth account via Admin SDK — does NOT affect current user session
+    let userRecord;
+    try {
+      userRecord = await admin.auth().createUser({
+        email: email.toLowerCase(),
+        password: tempPassword,
+        displayName: name,
+      });
+    } catch (authErr) {
+      if (authErr.code === 'auth/email-already-in-use') {
+        throw new functions.https.HttpsError('already-exists', 'An account with this email already exists.');
+      }
+      throw authErr;
+    }
+
+    // Create Firestore user doc
+    await admin.firestore().collection('users').doc(userRecord.uid).set({
+      name,
+      email: email.toLowerCase(),
+      role: role || 'crew',
+      jobTitle: jobTitle || 'Crew Member',
+      phoneNumber: phoneNumber || '',
+      employmentType: employmentType || 'hourly',
+      hourlyRate: employmentType === 'hourly' ? parseFloat(hourlyRate) || 0 : 0,
+      annualSalary: employmentType === 'salary' ? parseFloat(annualSalary) || 0 : 0,
+      paySchedule: paySchedule || 'semi-monthly',
+      requireGps: requireGps !== false,
+      createdAt: new Date().toISOString(),
+      createdBy: context.auth.uid,
+      active: true,
+      firstLogin: true,
+      mustChangePassword: true,
+      ndaSigned: false,
+      ndaSignedDate: null,
+      ndaSignatureUrl: null,
+      startDate: new Date().toISOString(),
+    });
+
+    console.log('>>> User doc created for:', userRecord.uid);
+
+    // Send welcome email with temp credentials via Resend
+    const appUrl = 'https://landscape-manager-8dad0.web.app';
+    let emailSent = false;
+    try {
+      await sendViaResend(
+        email,
+        `Your KCL Manager Account is Ready`,
+        `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <div style="background: #2e7d32; padding: 24px; text-align: center;">
+              <h1 style="color: white; margin: 0;">KCL Manager</h1>
+              <p style="color: #c8e6c9; margin: 8px 0 0;">Kings Canyon Landscaping</p>
+            </div>
+            <div style="padding: 32px 24px;">
+              <h2 style="color: #212121;">Hi ${name},</h2>
+              <p style="color: #546e7a; font-size: 16px;">
+                Your KCL Manager account has been created. Use the credentials below to log in.
+              </p>
+              <div style="background: #f5f5f5; border-radius: 8px; padding: 20px; margin: 24px 0; border-left: 4px solid #2e7d32;">
+                <p style="margin: 6px 0; font-size: 15px;"><strong>Login Link:</strong> <a href="${appUrl}" style="color: #2e7d32;">${appUrl}</a></p>
+                <p style="margin: 6px 0; font-size: 15px;"><strong>Email:</strong> ${email.toLowerCase()}</p>
+                <p style="margin: 6px 0; font-size: 15px;"><strong>Temporary Password:</strong> <code style="background:#e8f5e9;padding:2px 6px;border-radius:4px;font-size:15px;">${tempPassword}</code></p>
+              </div>
+              <div style="background: #fff3e0; border-radius: 8px; padding: 16px; margin: 16px 0; border-left: 4px solid #f57c00;">
+                <p style="margin: 0; color: #e65100; font-weight: bold;">⚠️ You will be asked to create a new password on your first login.</p>
+              </div>
+              <div style="text-align: center; margin: 32px 0;">
+                <a href="${appUrl}"
+                   style="background: #2e7d32; color: white; padding: 14px 32px; border-radius: 6px;
+                          text-decoration: none; font-size: 16px; font-weight: bold; display: inline-block;">
+                  Go to KCL Manager
+                </a>
+              </div>
+              <p style="color: #9e9e9e; font-size: 13px;">
+                After changing your password, you will be asked to sign a company NDA before accessing the app.
+              </p>
+            </div>
+            <div style="background: #f5f5f5; padding: 16px; text-align: center;">
+              <p style="color: #9e9e9e; font-size: 12px; margin: 0;">
+                Kings Canyon Landscaping LLC — Bullhead City, AZ
+              </p>
+            </div>
+          </div>
+        `
+      );
+      emailSent = true;
+      console.log('>>> Welcome email sent via Resend to:', email);
+    } catch (emailErr) {
+      console.error('>>> Resend welcome email failed:', emailErr.message);
+    }
+
+    return {
+      success: true,
+      uid: userRecord.uid,
+      emailSent,
+    };
+
+  } catch (error) {
+    console.error('>>> createEmployeeManually error:', error);
     if (error instanceof functions.https.HttpsError) throw error;
     throw new functions.https.HttpsError('internal', error.message);
   }
@@ -547,6 +738,247 @@ exports.acceptEmployeeInvite = functions.https.onCall(async (data) => {
     return { success: true, message: 'Account created successfully' };
   } catch (error) {
     console.error('>>> acceptEmployeeInvite error:', error);
+    if (error instanceof functions.https.HttpsError) throw error;
+    throw new functions.https.HttpsError('internal', error.message);
+  }
+});
+
+// ========================= ADMIN EMPLOYEE MANAGEMENT =========================
+
+/**
+ * adminResetPassword
+ * Sends a password reset email via your Gmail (not Firebase's spam-prone address)
+ * Called from EmployeeAccountManager Reset Password button
+ */
+exports.adminResetPassword = functions.runWith({ secrets: ["RESEND_API_KEY"] }).https.onCall(async (data, context) => {
+  console.log('>>> adminResetPassword called');
+
+  try {
+    if (!context.auth) {
+      throw new functions.https.HttpsError('unauthenticated', 'Must be logged in');
+    }
+
+    const { email, employeeName } = data;
+    if (!email) {
+      throw new functions.https.HttpsError('invalid-argument', 'Email is required');
+    }
+
+    // Verify employee exists in Firebase Auth
+    let userRecord;
+    try {
+      userRecord = await admin.auth().getUserByEmail(email.toLowerCase());
+    } catch (err) {
+      throw new functions.https.HttpsError('not-found', 'No account found for this email address');
+    }
+
+    // Generate a password reset link via Admin SDK
+    const resetLink = await admin.auth().generatePasswordResetLink(email.toLowerCase());
+
+    // Send password reset email via Resend
+    try {
+      await sendViaResend(
+        email,
+        'Reset Your KCL Manager Password',
+        `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <div style="background: #2e7d32; padding: 24px; text-align: center;">
+            <h1 style="color: white; margin: 0;">KCL Manager</h1>
+            <p style="color: #c8e6c9; margin: 8px 0 0;">Kings Canyon Landscaping</p>
+          </div>
+          <div style="padding: 32px 24px;">
+            <h2 style="color: #212121;">Hi ${employeeName || 'there'},</h2>
+            <p style="color: #546e7a; font-size: 16px;">
+              Your manager has requested a password reset for your KCL Manager account.
+            </p>
+            <p style="color: #546e7a;">
+              Click the button below to set a new password. This link expires in <strong>1 hour</strong>.
+            </p>
+            <div style="text-align: center; margin: 32px 0;">
+              <a href="${resetLink}"
+                 style="background: #2e7d32; color: white; padding: 14px 32px; border-radius: 6px;
+                        text-decoration: none; font-size: 16px; font-weight: bold; display: inline-block;">
+                Reset My Password
+              </a>
+            </div>
+            <p style="color: #9e9e9e; font-size: 13px;">
+              If the button doesn't work, copy this link into your browser:<br/>
+              <a href="${resetLink}" style="color: #2e7d32;">${resetLink}</a>
+            </p>
+            <p style="color: #9e9e9e; font-size: 13px;">
+              If you didn't request this, please contact your manager.
+            </p>
+          </div>
+          <div style="background: #f5f5f5; padding: 16px; text-align: center;">
+            <p style="color: #9e9e9e; font-size: 12px; margin: 0;">
+              Kings Canyon Landscaping LLC — Bullhead City, AZ
+            </p>
+          </div>
+        </div>
+        `
+      );
+      console.log('>>> Password reset email sent via Resend to:', email);
+    } catch (emailErr) {
+      throw new functions.https.HttpsError('internal', 'Failed to send reset email: ' + emailErr.message);
+    }
+
+    return { success: true, message: `Password reset email sent to ${email}` };
+  } catch (error) {
+    console.error('>>> adminResetPassword error:', error);
+    if (error instanceof functions.https.HttpsError) throw error;
+    throw new functions.https.HttpsError('internal', error.message);
+  }
+});
+
+/**
+ * adminDeleteAndReinvite
+ * Cleanly removes employee from Firebase Auth + marks old invites used,
+ * then creates a fresh invite and sends the email.
+ * Use when an employee is stuck in a broken state.
+ */
+exports.adminDeleteAndReinvite = functions.runWith({ secrets: ["RESEND_API_KEY"] }).https.onCall(async (data, context) => {
+  console.log('>>> adminDeleteAndReinvite called');
+
+  try {
+    if (!context.auth) {
+      throw new functions.https.HttpsError('unauthenticated', 'Must be logged in');
+    }
+
+    const { email, name, role, jobTitle, phoneNumber, employmentType, hourlyRate, annualSalary, paySchedule, requireGps } = data;
+    if (!email || !name) {
+      throw new functions.https.HttpsError('invalid-argument', 'Email and name are required');
+    }
+
+    // Step 1: Delete Firebase Auth account if it exists
+    try {
+      const existingUser = await admin.auth().getUserByEmail(email.toLowerCase());
+      await admin.auth().deleteUser(existingUser.uid);
+      // Also delete Firestore user doc
+      await admin.firestore().collection('users').doc(existingUser.uid).delete();
+      console.log('>>> Deleted existing auth user:', email);
+    } catch (err) {
+      if (err.code !== 'auth/user-not-found') {
+        console.warn('>>> Could not delete auth user (may not exist):', err.message);
+      }
+    }
+
+    // Step 2: Mark all existing invites for this email as used
+    const existingInvites = await admin.firestore()
+      .collection('invites')
+      .where('email', '==', email.toLowerCase())
+      .get();
+
+    for (const inviteDoc of existingInvites.docs) {
+      await inviteDoc.ref.update({ used: true, invalidatedAt: new Date().toISOString(), invalidatedReason: 'adminDeleteAndReinvite' });
+    }
+    console.log('>>> Invalidated', existingInvites.size, 'existing invites for:', email);
+
+    // Step 3: Create fresh invite token
+    const token = generateInviteToken();
+    const expiresAt = new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString();
+
+    await admin.firestore().collection('invites').doc(token).set({
+      token,
+      name,
+      email: email.toLowerCase(),
+      role: role || 'crew',
+      jobTitle: jobTitle || 'Crew Member',
+      phoneNumber: phoneNumber || '',
+      employmentType: employmentType || 'hourly',
+      hourlyRate: hourlyRate || 0,
+      annualSalary: annualSalary || 0,
+      paySchedule: paySchedule || 'semi-monthly',
+      requireGps: requireGps !== false,
+      invitedBy: context.auth.uid,
+      used: false,
+      createdAt: new Date().toISOString(),
+      expiresAt,
+      isReinvite: true,
+    });
+
+    // Step 4: Send fresh invite email via Resend
+    const settings = await getSettings();
+    const appUrl = 'https://landscape-manager-8dad0.web.app';
+    const inviteUrl = `${appUrl}/public/invite/${token}`;
+
+    try {
+      await sendViaResend(
+        email,
+        `Your KCL Manager account has been reset — new invite inside`,
+        `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <div style="background: #2e7d32; padding: 24px; text-align: center;">
+              <h1 style="color: white; margin: 0;">KCL Manager</h1>
+              <p style="color: #c8e6c9; margin: 8px 0 0;">Kings Canyon Landscaping</p>
+            </div>
+            <div style="padding: 32px 24px;">
+              <h2 style="color: #212121;">Hi ${name},</h2>
+              <p style="color: #546e7a; font-size: 16px;">
+                Your account has been reset. Use the button below to create a fresh account.
+                This link expires in <strong>72 hours</strong>.
+              </p>
+              <div style="text-align: center; margin: 32px 0;">
+                <a href="${inviteUrl}"
+                   style="background: #2e7d32; color: white; padding: 14px 32px; border-radius: 6px;
+                          text-decoration: none; font-size: 16px; font-weight: bold; display: inline-block;">
+                  Set Up My Account
+                </a>
+              </div>
+              <p style="color: #9e9e9e; font-size: 13px;">
+                If the button doesn't work, copy this link into your browser:<br/>
+                <a href="${inviteUrl}" style="color: #2e7d32;">${inviteUrl}</a>
+              </p>
+            </div>
+            <div style="background: #f5f5f5; padding: 16px; text-align: center;">
+              <p style="color: #9e9e9e; font-size: 12px; margin: 0;">
+                Kings Canyon Landscaping LLC — Bullhead City, AZ
+              </p>
+            </div>
+          </div>
+        `
+      );
+      console.log('>>> Reinvite email sent via Resend to:', email);
+    } catch (emailErr) {
+      console.error('>>> Resend reinvite email failed:', emailErr.message);
+    }
+
+    return { success: true, message: `Account reset and fresh invite sent to ${email}`, inviteUrl };
+  } catch (error) {
+    console.error('>>> adminDeleteAndReinvite error:', error);
+    if (error instanceof functions.https.HttpsError) throw error;
+    throw new functions.https.HttpsError('internal', error.message);
+  }
+});
+
+// ========================= SET EMPLOYEE AUTH STATUS =========================
+
+exports.setEmployeeAuthStatus = functions.https.onCall(async (data, context) => {
+  console.log('>>> setEmployeeAuthStatus called');
+  try {
+    if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Must be logged in');
+    const callerDoc = await admin.firestore().collection('users').doc(context.auth.uid).get();
+    const callerRole = callerDoc.exists ? callerDoc.data().role : null;
+    if (!['god', 'admin'].includes(callerRole)) {
+      throw new functions.https.HttpsError('permission-denied', 'Admin only');
+    }
+
+    const { uid, disabled } = data;
+    if (!uid || typeof disabled !== 'boolean') {
+      throw new functions.https.HttpsError('invalid-argument', 'uid and disabled (boolean) required');
+    }
+
+    // Disable/enable the Firebase Auth account
+    await admin.auth().updateUser(uid, { disabled });
+
+    // If disabling, revoke all refresh tokens so any active sessions are immediately invalidated
+    if (disabled) {
+      await admin.auth().revokeRefreshTokens(uid);
+      console.log('>>> Refresh tokens revoked for ' + uid);
+    }
+
+    console.log('>>> Auth account ' + uid + ' set to disabled=' + disabled);
+    return { success: true };
+  } catch (error) {
+    console.error('>>> setEmployeeAuthStatus error:', error);
     if (error instanceof functions.https.HttpsError) throw error;
     throw new functions.https.HttpsError('internal', error.message);
   }
@@ -737,7 +1169,7 @@ exports.eveningJobReminder = functions.pubsub
 
 // ========================= CUSTOMER EMAIL FUNCTIONS =========================
 
-exports.sendCustomerEmail = functions.https.onCall(async (data, context) => {
+exports.sendCustomerEmail = functions.runWith({ secrets: ["RESEND_API_KEY"], memory: "512MB" }).https.onCall(async (data, context) => {
   console.log('>>> sendCustomerEmail called');
 
   try {
@@ -757,30 +1189,17 @@ exports.sendCustomerEmail = functions.https.onCall(async (data, context) => {
       throw new functions.https.HttpsError('invalid-argument', 'Email and subject are required');
     }
 
-    const settings = await getSettings();
-    if (!settings || !settings.gmailConfigured || !settings.gmailEmail || !settings.gmailAppPassword) {
-      throw new functions.https.HttpsError('failed-precondition', 'Gmail not configured. Go to SMS Settings to set up Gmail.');
-    }
-
-    const transporter = createTransporter(settings.gmailEmail, settings.gmailAppPassword);
-
-    const mailOptions = {
-      from: `"Kings Canyon Landscaping" <${settings.gmailEmail}>`,
-      to: customerEmail,
-      subject,
-      html: htmlBody,
-    };
-
+    // Build attachments array for Resend
+    const attachments = [];
     if (pdfBase64 && pdfFilename) {
-      mailOptions.attachments = [{
+      attachments.push({
         filename: pdfFilename,
         content: Buffer.from(pdfBase64, 'base64'),
-        contentType: 'application/pdf',
-      }];
+      });
     }
 
-    await transporter.sendMail(mailOptions);
-    transporter.close();
+    // Send via Resend
+    await sendViaResend(customerEmail, subject, htmlBody, attachments);
 
     await admin.firestore().collection('email_log').add({
       to: customerEmail,
@@ -794,7 +1213,8 @@ exports.sendCustomerEmail = functions.https.onCall(async (data, context) => {
       metadata: metadata || {},
     });
 
-    if (settings.adminPhones?.length > 0) {
+    const settings = await getSettings();
+    if (settings?.adminPhones?.length > 0) {
       const adminMsg = `EMAIL SENT\n${docType?.toUpperCase() || 'Doc'} => ${customerName}\n${customerEmail}`;
       sendToAllAdmins(settings, adminMsg, 'email_sent', { docType, docId, customerEmail })
         .catch(err => console.error('Admin notify error:', err));
@@ -833,15 +1253,12 @@ exports.notifySignature = functions.https.onCall(async (data) => {
     }
 
     const settings = await getSettings();
-    if (!settings || !settings.adminPhones?.length) {
-      return { success: true, message: 'No admins to notify' };
-    }
 
     const typeLabel = docType === 'bid' ? 'BID ACCEPTED' : 'CONTRACT SIGNED';
     const amountStr = amount ? `\n$${parseFloat(amount).toFixed(2)}` : '';
     const message = `${typeLabel}\n${customerName}${amountStr}\nCheck the app for details`;
 
-    await sendToAllAdmins(settings, message, 'signature_received', { docType, docId, customerName });
+    await sendToAllAdmins(settings || {}, message, 'signature_received', { docType, docId, customerName });
 
     await admin.firestore().collection('notifications_log').add({
       type: 'signature_received',
@@ -1074,3 +1491,152 @@ Only respond in plain text if the user asks a general non-job question. Otherwis
     throw new functions.https.HttpsError('internal', error.message);
   }
 });
+// ========================= MAINTENANCE CONTRACT AUTO-ACTIVATION =========================
+// Firestore trigger: fires whenever a contract document is written.
+// When both client AND contractor signatures are present on a maintenance_agreement,
+// automatically activates the linked maintenance_contracts doc and creates schedules.
+
+exports.onContractSigned = functions.runWith({ secrets: ["RESEND_API_KEY"] }).firestore
+  .document('contracts/{contractId}')
+  .onWrite(async (change, context) => {
+    const after = change.after.exists ? change.after.data() : null;
+    const before = change.before.exists ? change.before.data() : null;
+
+    if (!after) return null; // Document deleted — ignore
+
+    // Only handle maintenance agreements
+    if (after.type !== 'maintenance_agreement') return null;
+
+    const hadBothSigs = before && before.clientSignature && before.contractorSignature;
+    const hasBothSigs = after.clientSignature && after.contractorSignature;
+
+    // Only fire when transitioning TO both-signed (not on every write)
+    if (hadBothSigs || !hasBothSigs) return null;
+
+    const maintenanceContractId = after.maintenanceContractId;
+    if (!maintenanceContractId) {
+      console.warn('>>> onContractSigned: no maintenanceContractId on contract', context.params.contractId);
+      return null;
+    }
+
+    console.log('>>> onContractSigned: maintenance agreement fully signed, activating:', maintenanceContractId);
+
+    try {
+      // 1. Load the maintenance contract
+      const mcRef = admin.firestore().collection('maintenance_contracts').doc(maintenanceContractId);
+      const mcSnap = await mcRef.get();
+      if (!mcSnap.exists) {
+        console.warn('>>> onContractSigned: maintenance_contracts doc not found:', maintenanceContractId);
+        return null;
+      }
+
+      const mc = mcSnap.data();
+
+      // Only activate if still pending — don't re-activate paused/cancelled contracts
+      if (mc.status !== 'pending_signature') {
+        console.log('>>> onContractSigned: contract already in status:', mc.status, '— skipping');
+        return null;
+      }
+
+      // 2. Activate the maintenance contract
+      await mcRef.update({
+        status: 'active',
+        activatedAt: new Date().toISOString(),
+        activatedByContractId: context.params.contractId,
+      });
+
+      console.log('>>> onContractSigned: maintenance contract activated');
+
+      // 3. Create schedules (inline — can't import frontend maintenanceScheduler here)
+      const startDate = mc.startDate || new Date().toISOString().split('T')[0];
+      const frequency = mc.frequency || 'biweekly';
+      const monthsAhead = mc.monthsAhead || 3;
+
+      let visitsToCreate;
+      switch (frequency) {
+        case 'weekly':    visitsToCreate = monthsAhead * 4; break;
+        case 'biweekly':  visitsToCreate = monthsAhead * 2; break;
+        case 'monthly':   visitsToCreate = monthsAhead;     break;
+        default:          visitsToCreate = monthsAhead * 2;
+      }
+
+      const today = new Date().toISOString().split('T')[0];
+      const scheduleStart = startDate > today ? startDate : today;
+
+      // Calculate visit dates
+      const visitDates = [];
+      let current = new Date(scheduleStart + 'T00:00:00');
+      for (let i = 0; i < visitsToCreate; i++) {
+        visitDates.push(current.toISOString().split('T')[0]);
+        if (frequency === 'monthly') {
+          current.setMonth(current.getMonth() + 1);
+        } else if (frequency === 'weekly') {
+          current.setDate(current.getDate() + 7);
+        } else {
+          current.setDate(current.getDate() + 14);
+        }
+      }
+
+      // Check for existing schedules to avoid duplicates
+      const existingSnap = await admin.firestore()
+        .collection('schedules')
+        .where('maintenanceContractId', '==', maintenanceContractId)
+        .get();
+      const existingDates = existingSnap.docs.map(d => d.data().startDate);
+      const datesToCreate = visitDates.filter(d => !existingDates.includes(d));
+
+      // Create schedule entries
+      const batch = admin.firestore().batch();
+      for (const date of datesToCreate) {
+        const schedRef = admin.firestore().collection('schedules').doc();
+        batch.set(schedRef, {
+          clientName: mc.customerName || '',
+          customerId: mc.customerId || '',
+          maintenanceContractId,
+          startDate: date,
+          endDate: date,
+          startTime: '08:00',
+          endTime: '17:00',
+          selectedCrews: [],
+          assignedEmployees: [],
+          status: 'scheduled',
+          type: 'maintenance',
+          notes: `Maintenance visit — ${frequency}`,
+          servicesIncluded: mc.servicesIncluded || '',
+          monthlyRate: mc.monthlyRate || 0,
+          createdAt: new Date().toISOString(),
+          autoGenerated: true,
+        });
+      }
+      await batch.commit();
+
+      console.log(`>>> onContractSigned: created ${datesToCreate.length} schedule entries`);
+
+      // 4. Send Pushover notification to Darren
+      const settings = await getSettings();
+      if (settings?.adminPhones?.length) {
+        const message = `✅ MAINTENANCE SIGNED\n${after.clientName || mc.customerName}\n$${mc.monthlyRate}/mo — ${frequency}\n${datesToCreate.length} visits scheduled`;
+        await sendToAllAdmins(settings, message, 'maintenance_activated', {
+          maintenanceContractId,
+          customerName: after.clientName || mc.customerName,
+        });
+      }
+
+      // 5. Log it
+      await admin.firestore().collection('notifications_log').add({
+        type: 'maintenance_contract_activated',
+        maintenanceContractId,
+        contractId: context.params.contractId,
+        customerName: after.clientName || mc.customerName,
+        schedulesCreated: datesToCreate.length,
+        activatedAt: new Date().toISOString(),
+      });
+
+      return null;
+
+    } catch (error) {
+      console.error('>>> onContractSigned error:', error);
+      return null; // Never throw in Firestore triggers — it retries forever
+    }
+  });
+// resend-secret-deploy

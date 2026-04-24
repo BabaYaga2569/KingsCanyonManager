@@ -18,6 +18,7 @@ import {
   Send as SendIcon,
   Email as EmailIcon,
   Work as WorkIcon,
+  Refresh as RefreshIcon,
 } from '@mui/icons-material';
 import { db, auth } from './firebase';
 import { useAuth } from './AuthProvider';
@@ -36,6 +37,10 @@ import generateEmployeeNDAPDF from './pdf/generateEmployeeNDAPDF';
 
 const functions = getFunctions();
 const sendEmployeeInviteFn = httpsCallable(functions, 'sendEmployeeInvite');
+const adminResetPasswordFn = httpsCallable(functions, 'adminResetPassword');
+const adminDeleteAndReinviteFn = httpsCallable(functions, 'adminDeleteAndReinvite');
+const createEmployeeManuallyFn = httpsCallable(functions, 'createEmployeeManually');
+const setEmployeeAuthStatusFn = httpsCallable(functions, 'setEmployeeAuthStatus');
 
 // ── Helper: calculate salary per pay period ──────────────────────────────────
 function calcPerPeriod(annualSalary, paySchedule) {
@@ -133,6 +138,15 @@ const EmployeeAccountManager = ({ currentUser, currentUserRole }) => {
   const [inviteLoading, setInviteLoading] = useState(false);
   const [inviteForm, setInviteForm] = useState({
     name: '', email: '', role: 'crew', jobTitle: 'Crew Member',
+    phoneNumber: '', employmentType: 'hourly', hourlyRate: '',
+    annualSalary: '', paySchedule: 'semi-monthly', requireGps: true,
+  });
+
+  // ── Manual Add dialog ─────────────────────────────────────────────────────
+  const [manualOpen, setManualOpen]       = useState(false);
+  const [manualLoading, setManualLoading] = useState(false);
+  const [manualForm, setManualForm] = useState({
+    name: '', email: '', tempPassword: '', role: 'crew', jobTitle: 'Crew Member',
     phoneNumber: '', employmentType: 'hourly', hourlyRate: '',
     annualSalary: '', paySchedule: 'semi-monthly', requireGps: true,
   });
@@ -313,6 +327,92 @@ const EmployeeAccountManager = ({ currentUser, currentUserRole }) => {
   };
 
   // ════════════════════════════════════════════════════════════════════════════
+  // MANUAL ADD FLOW (creates account directly, emails temp credentials)
+  // ════════════════════════════════════════════════════════════════════════════
+  const generateTempPassword = () => {
+    const digits = Math.floor(100000 + Math.random() * 900000);
+    return `KCL${digits}`;
+  };
+
+  const openManualAdd = () => {
+    setManualForm({
+      name: '', email: '', tempPassword: generateTempPassword(),
+      role: 'crew', jobTitle: 'Crew Member', phoneNumber: '',
+      employmentType: 'hourly', hourlyRate: '',
+      annualSalary: '', paySchedule: 'semi-monthly', requireGps: true,
+    });
+    setManualOpen(true);
+  };
+
+  const handleManualAdd = async () => {
+    const { name, email, tempPassword, employmentType, hourlyRate, annualSalary } = manualForm;
+    if (!name.trim() || !email.trim()) {
+      Swal.fire('Missing Fields', 'Name and email are required.', 'warning'); return;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+      Swal.fire('Invalid Email', 'Please enter a valid email address.', 'warning'); return;
+    }
+    if (!tempPassword || tempPassword.length < 6) {
+      Swal.fire('Invalid Password', 'Temp password must be at least 6 characters.', 'warning'); return;
+    }
+    if (employmentType === 'hourly' && (!hourlyRate || parseFloat(hourlyRate) <= 0)) {
+      Swal.fire('Missing Pay Rate', 'Please enter an hourly rate.', 'warning'); return;
+    }
+    if (employmentType === 'salary' && (!annualSalary || parseFloat(annualSalary) <= 0)) {
+      Swal.fire('Missing Salary', 'Please enter an annual salary.', 'warning'); return;
+    }
+    try {
+      setManualLoading(true);
+      const result = await createEmployeeManuallyFn({
+        name: name.trim(),
+        email: email.trim().toLowerCase(),
+        tempPassword,
+        role: manualForm.role,
+        jobTitle: manualForm.jobTitle,
+        phoneNumber: manualForm.phoneNumber.trim(),
+        employmentType,
+        hourlyRate: employmentType === 'hourly' ? parseFloat(hourlyRate) : 0,
+        annualSalary: employmentType === 'salary' ? parseFloat(annualSalary) : 0,
+        paySchedule: manualForm.paySchedule,
+        requireGps: manualForm.requireGps,
+      });
+      setManualOpen(false);
+      loadEmployees();
+      Swal.fire({
+        icon: 'success',
+        title: 'Employee Account Created!',
+        html: `
+          <p><strong>${name.trim()}</strong> has been added.</p>
+          <hr/>
+          <p style="margin:8px 0;"><strong>Login Link:</strong><br/>
+            <a href="https://landscape-manager-8dad0.web.app" target="_blank" style="color:#2e7d32;">
+              landscape-manager-8dad0.web.app
+            </a>
+          </p>
+          <p style="margin:8px 0;"><strong>Email:</strong> ${email.trim().toLowerCase()}</p>
+          <p style="margin:8px 0;"><strong>Temp Password:</strong>
+            <code style="background:#e8f5e9;padding:2px 8px;border-radius:4px;font-size:15px;">${tempPassword}</code>
+          </p>
+          <hr/>
+          <p style="color:#555;font-size:0.9em;">
+            ${result.data?.emailSent
+              ? '✅ Welcome email sent to their inbox.'
+              : '⚠️ Gmail not configured — share these credentials manually.'}
+          </p>
+          <p style="color:#f57c00;font-size:0.9em;">
+            ⚠️ They will be asked to change their password on first login.
+          </p>
+        `,
+        confirmButtonText: 'Got it!',
+      });
+    } catch (err) {
+      Swal.fire('Error', err.message || 'Failed to create employee', 'error');
+    } finally {
+      setManualLoading(false);
+    }
+  };
+
+  // ════════════════════════════════════════════════════════════════════════════
   // LEGACY CREATE FLOW (kept as fallback — manual password)
   // ════════════════════════════════════════════════════════════════════════════
   const handleOpenDialog = (employee = null) => {
@@ -457,6 +557,69 @@ const EmployeeAccountManager = ({ currentUser, currentUserRole }) => {
   };
 
   // ════════════════════════════════════════════════════════════════════════════
+  // RESET PASSWORD / CLEAN REINVITE
+  // ════════════════════════════════════════════════════════════════════════════
+  const handleResetPassword = async (employee) => {
+    const result = await Swal.fire({
+      title: `Reset Password for ${employee.name}?`,
+      html: `<p>This will send a password reset email to:</p><p><strong>${employee.email}</strong></p><p style="color:#2e7d32;">✅ Sent from your Gmail — lands in inbox, not spam</p>`,
+      icon: 'question',
+      showCancelButton: true,
+      confirmButtonText: 'Send Reset Email',
+      confirmButtonColor: '#1976d2',
+    });
+    if (!result.isConfirmed) return;
+
+    try {
+      await adminResetPasswordFn({ email: employee.email, employeeName: employee.name });
+      Swal.fire({ icon: 'success', title: 'Reset Email Sent!', text: `Password reset email sent to ${employee.email}`, timer: 3000, showConfirmButton: false });
+    } catch (err) {
+      Swal.fire('Error', 'Failed to send reset email: ' + err.message, 'error');
+    }
+  };
+
+  const handleCleanReinvite = async (employee) => {
+    const result = await Swal.fire({
+      title: `Clean Reinvite — ${employee.name}?`,
+      html: `
+        <p>This will:</p>
+        <ul style="text-align:left; margin: 10px 0;">
+          <li>❌ Delete their existing Firebase account</li>
+          <li>❌ Invalidate all previous invite links</li>
+          <li>✅ Create a fresh invite</li>
+          <li>✅ Send a new invite email to <strong>${employee.email}</strong></li>
+        </ul>
+        <p style="color:orange;"><strong>⚠️ Use this when someone is stuck in a broken invite state</strong></p>
+      `,
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonText: 'Yes, Clean Reinvite',
+      confirmButtonColor: '#d32f2f',
+    });
+    if (!result.isConfirmed) return;
+
+    try {
+      Swal.fire({ title: 'Processing...', text: 'Resetting account and sending invite...', allowOutsideClick: false, didOpen: () => Swal.showLoading() });
+      await adminDeleteAndReinviteFn({
+        email: employee.email,
+        name: employee.name,
+        role: employee.role || 'crew',
+        jobTitle: employee.jobTitle || 'Crew Member',
+        phoneNumber: employee.phoneNumber || '',
+        employmentType: employee.employmentType || 'hourly',
+        hourlyRate: employee.hourlyRate || 0,
+        annualSalary: employee.annualSalary || 0,
+        paySchedule: employee.paySchedule || 'semi-monthly',
+        requireGps: employee.requireGps !== false,
+      });
+      Swal.fire({ icon: 'success', title: 'Clean Reinvite Sent!', html: `<p>Account reset and fresh invite sent to <strong>${employee.email}</strong></p><p>They have 72 hours to complete setup.</p>`, timer: 4000 });
+      loadEmployees();
+    } catch (err) {
+      Swal.fire('Error', 'Failed to reinvite: ' + err.message, 'error');
+    }
+  };
+
+  // ════════════════════════════════════════════════════════════════════════════
   // TOGGLE ACTIVE / DELETE
   // ════════════════════════════════════════════════════════════════════════════
   const handleToggleActive = async (employee) => {
@@ -475,6 +638,8 @@ const EmployeeAccountManager = ({ currentUser, currentUserRole }) => {
       updatedAt: new Date().toISOString(),
       ...(newStatus ? {} : { inactivatedAt: new Date().toISOString() }),
     });
+    try { await setEmployeeAuthStatusFn({ uid: employee.id, disabled: !newStatus }); }
+    catch (authErr) { console.warn('Auth status update failed:', authErr.message); }
     await logAction(newStatus ? AUDIT_ACTIONS.EMPLOYEE_ACTIVATED : AUDIT_ACTIONS.EMPLOYEE_DEACTIVATED, { employeeId: employee.id, employeeName: employee.name }, user, userRole);
     Swal.fire({ icon: 'success', title: newStatus ? 'Enabled!' : 'Disabled!', timer: 1500, showConfirmButton: false });
     loadEmployees();
@@ -526,6 +691,8 @@ const EmployeeAccountManager = ({ currentUser, currentUserRole }) => {
         await updateDoc(doc(db, 'users', employee.id), {
           active: false, inactivatedAt: new Date().toISOString(), updatedBy: currentUser.uid,
         });
+        try { await setEmployeeAuthStatusFn({ uid: employee.id, disabled: true }); }
+        catch (authErr) { console.warn('Auth disable failed:', authErr.message); }
         Swal.fire({
           icon: 'success', title: 'Marked Inactive!',
           html: `<p><strong>${employee.name}</strong> can no longer clock in.</p><p>✅ All records preserved for taxes</p>`,
@@ -611,8 +778,8 @@ const EmployeeAccountManager = ({ currentUser, currentUserRole }) => {
               </Box>
             </Box>
             <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
-              <Button variant="outlined" startIcon={<AddIcon />} onClick={() => handleOpenDialog()}>
-                Add Manually
+              <Button variant="outlined" color="warning" startIcon={<AddIcon />} onClick={openManualAdd}>
+                Manual Add + Email
               </Button>
               <Button variant="contained" color="success" startIcon={<SendIcon />} onClick={openInvite}
                 sx={{ bgcolor: 'success.main', '&:hover': { bgcolor: 'success.dark' } }}>
@@ -751,6 +918,14 @@ const EmployeeAccountManager = ({ currentUser, currentUserRole }) => {
                             <EmailIcon fontSize="small" />
                           </IconButton>
                         )}
+                        <IconButton size="small" color="primary" title="Reset Password — sends email via Gmail" onClick={() => handleResetPassword(employee)}>
+                          <LockOpenIcon fontSize="small" />
+                        </IconButton>
+                        {employee.id !== currentUser.uid && (
+                          <IconButton size="small" color="warning" title="Clean Reinvite — wipes account and sends fresh invite" onClick={() => handleCleanReinvite(employee)}>
+                            <RefreshIcon fontSize="small" />
+                          </IconButton>
+                        )}
                         <IconButton size="small"
                           color={employee.active !== false ? 'warning' : 'success'}
                           title={employee.active !== false ? 'Disable Account' : 'Enable Account'}
@@ -864,6 +1039,78 @@ const EmployeeAccountManager = ({ currentUser, currentUserRole }) => {
           </TableContainer>
         )}
       </Box>
+
+      {/* ── MANUAL ADD DIALOG ────────────────────────────────────────────── */}
+      <Dialog open={manualOpen} onClose={() => setManualOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>➕ Manual Add Employee</DialogTitle>
+        <DialogContent>
+          <Alert severity="info" sx={{ mb: 2 }}>
+            Creates the account immediately and emails them their login link + temp password.
+            They will be forced to change their password on first login, then sign the NDA.
+          </Alert>
+          <Grid container spacing={2} sx={{ mt: 0 }}>
+            <Grid item xs={12}>
+              <TextField fullWidth required label="Full Name *"
+                value={manualForm.name}
+                onChange={e => setManualForm({ ...manualForm, name: e.target.value })} />
+            </Grid>
+            <Grid item xs={12}>
+              <TextField fullWidth required label="Email *" type="email"
+                value={manualForm.email}
+                onChange={e => setManualForm({ ...manualForm, email: e.target.value })} />
+            </Grid>
+            <Grid item xs={12}>
+              <TextField fullWidth required label="Temp Password *"
+                value={manualForm.tempPassword}
+                onChange={e => setManualForm({ ...manualForm, tempPassword: e.target.value })}
+                helperText="Auto-generated. You can edit it. Share this with the employee — they'll change it on first login."
+                InputProps={{
+                  endAdornment: (
+                    <InputAdornment position="end">
+                      <Button size="small" onClick={() =>
+                        setManualForm({ ...manualForm, tempPassword: generateTempPassword() })
+                      }>
+                        Regenerate
+                      </Button>
+                    </InputAdornment>
+                  ),
+                }} />
+            </Grid>
+            <Grid item xs={12} sm={6}>
+              <TextField select fullWidth label="Role" value={manualForm.role}
+                onChange={e => setManualForm({ ...manualForm, role: e.target.value })}>
+                <MenuItem value="crew">👷 Crew Member</MenuItem>
+                <MenuItem value="admin">⚙️ Admin</MenuItem>
+              </TextField>
+            </Grid>
+            <Grid item xs={12} sm={6}>
+              <TextField select fullWidth label="Job Title" value={manualForm.jobTitle}
+                onChange={e => setManualForm({ ...manualForm, jobTitle: e.target.value })}>
+                <MenuItem value="Owner">👑 Owner</MenuItem>
+                <MenuItem value="Manager">⚙️ Manager</MenuItem>
+                <MenuItem value="Foreman">🔨 Foreman</MenuItem>
+                <MenuItem value="Crew Member">👷 Crew Member</MenuItem>
+                <MenuItem value="Equipment Operator">🚜 Equipment Operator</MenuItem>
+                <MenuItem value="Landscaper">🌳 Landscaper</MenuItem>
+                <MenuItem value="Office Manager">🏢 Office Manager</MenuItem>
+              </TextField>
+            </Grid>
+            <Grid item xs={12} sm={6}>
+              <TextField fullWidth label="Phone Number" value={manualForm.phoneNumber}
+                onChange={e => setManualForm({ ...manualForm, phoneNumber: e.target.value })} />
+            </Grid>
+            <EmploymentFields form={manualForm} setForm={setManualForm} />
+          </Grid>
+        </DialogContent>
+        <DialogActions sx={{ p: 2, gap: 1 }}>
+          <Button onClick={() => setManualOpen(false)}>Cancel</Button>
+          <Button variant="contained" color="warning"
+            startIcon={manualLoading ? <CircularProgress size={18} /> : <PersonAddIcon />}
+            onClick={handleManualAdd} disabled={manualLoading}>
+            {manualLoading ? 'Creating...' : 'Create & Email Credentials'}
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       {/* ── INVITE DIALOG ─────────────────────────────────────────────────── */}
       <Dialog open={inviteOpen} onClose={() => setInviteOpen(false)} maxWidth="sm" fullWidth>

@@ -681,62 +681,105 @@ export default function TimeClock() {
       const lunchHours = (currentEntry.lunchMinutes || 0) / 60;
       const workedHours = totalHours - lunchHours;
 
+      // ── GPS HARD GATE ─────────────────────────────────────────────────────
+      // Must be on site to clock out. No bypass, no "Clock Out Anyway".
       let gpsOutData = {};
+      let position;
+
       try {
-        const position = await getCurrentPositionAsync();
-        const { latitude, longitude, accuracy } = position.coords;
+        position = await getCurrentPositionAsync();
+      } catch (gpsError) {
+        // GPS failed — determine if it's a permission denial or just unavailable
+        const denied = gpsError.code === 1; // PERMISSION_DENIED
+        await Swal.fire({
+          icon: "error",
+          title: denied ? "Location Permission Required" : "GPS Unavailable",
+          html: denied
+            ? `<p>You must allow location access to clock out.</p>
+               <p><strong>How to fix:</strong></p>
+               ${/iPhone|iPad|iPod/.test(navigator.userAgent)
+                 ? `<ol style="text-align:left">
+                      <li>Open <strong>Settings → Privacy → Location Services</strong></li>
+                      <li>Find your browser (Safari/Chrome)</li>
+                      <li>Set to <strong>"While Using"</strong></li>
+                      <li>Return here and try again</li>
+                    </ol>`
+                 : `<ol style="text-align:left">
+                      <li>Tap the <strong>lock icon</strong> in your browser address bar</li>
+                      <li>Tap <strong>Permissions → Location</strong></li>
+                      <li>Set to <strong>Allow</strong></li>
+                      <li>Return here and try again</li>
+                    </ol>`
+               }
+               <p style="margin-top:12px;color:#888">If the problem persists, contact your manager.</p>`
+            : `<p>Your GPS could not get a location fix. Clock out is <strong>not allowed</strong> until your location can be verified.</p>
+               <p><strong>How to fix:</strong></p>
+               <ol style="text-align:left">
+                 <li>Step outside or move to an open area</li>
+                 <li>Make sure Location Services is enabled on your phone</li>
+                 <li>Try again in 30 seconds</li>
+               </ol>
+               <p style="margin-top:12px;color:#888">If you believe this is an app error, contact your manager at <strong>928-450-5733</strong>.</p>`,
+          confirmButtonText: "OK",
+          confirmButtonColor: "#d32f2f",
+        });
+        return; // Hard block — do not clock out
+      }
 
-        const jobLat = currentEntry.gpsJobLat || null;
-        const jobLng = currentEntry.gpsJobLng || null;
+      const { latitude, longitude, accuracy } = position.coords;
+      const jobLat = currentEntry.gpsJobLat || null;
+      const jobLng = currentEntry.gpsJobLng || null;
 
-        if (jobLat && jobLng) {
-          const distanceFeet = calculateDistanceFeet(latitude, longitude, jobLat, jobLng);
-          gpsOutData = {
-            gpsOutLat: latitude,
-            gpsOutLng: longitude,
-            gpsOutAccuracyMeters: Math.round(accuracy),
-            gpsOutAccuracyFeet: Math.round(accuracy * 3.28084),
-            gpsOutDistanceFeet: distanceFeet,
-            gpsOutDistanceMiles: parseFloat((distanceFeet / 5280).toFixed(2)),
-          };
-        } else {
-          gpsOutData = {
-            gpsOutLat: latitude,
-            gpsOutLng: longitude,
-            gpsOutAccuracyMeters: Math.round(accuracy),
-            gpsOutAccuracyFeet: Math.round(accuracy * 3.28084),
-          };
-        }
-        console.log("📍 Clock-out GPS captured:", gpsOutData);
+      if (jobLat && jobLng) {
+        const distanceFeet = calculateDistanceFeet(latitude, longitude, jobLat, jobLng);
+        gpsOutData = {
+          gpsOutLat: latitude,
+          gpsOutLng: longitude,
+          gpsOutAccuracyMeters: Math.round(accuracy),
+          gpsOutAccuracyFeet: Math.round(accuracy * 3.28084),
+          gpsOutDistanceFeet: distanceFeet,
+          gpsOutDistanceMiles: parseFloat((distanceFeet / 5280).toFixed(2)),
+        };
 
-        if (gpsOutData.gpsOutDistanceFeet != null && gpsOutData.gpsOutDistanceFeet > 500) {
-          await Swal.fire({
-            icon: "warning",
-            title: "Not at Job Site",
-            html: `You are <strong>${gpsOutData.gpsOutDistanceFeet.toLocaleString()} ft (${gpsOutData.gpsOutDistanceMiles} mi)</strong> from the job site.<br/><br/>
-                   Your manager has been notified.<br/>
-                   <small style="color:#888">${currentEntry.jobAddress || ""}</small>`,
-            confirmButtonText: "Clock Out Anyway",
-            confirmButtonColor: "#d32f2f",
-          });
-
+        if (distanceFeet > 500) {
+          // Hard block — off site, no bypass
           try {
             const empName = currentEntry.crewName || user.displayName || user.email;
             await notifyFailedClockOut(
               empName,
               currentEntry.jobName || "Unknown Job",
-              gpsOutData.gpsOutDistanceFeet,
-              gpsOutData.gpsOutDistanceMiles,
+              distanceFeet,
+              parseFloat((distanceFeet / 5280).toFixed(2)),
               currentEntry.jobAddress || null,
               workedHours.toFixed(2)
             );
           } catch (e) {
             console.error("📍 Failed to send off-site clock-out notification:", e);
           }
+
+          await Swal.fire({
+            icon: "error",
+            title: "Not at Job Site",
+            html: `<p>You are <strong>${distanceFeet.toLocaleString()} ft (${(distanceFeet / 5280).toFixed(2)} mi)</strong> from the job site.</p>
+                   <p>You must be within <strong>500 ft</strong> to clock out.</p>
+                   <p style="color:#888;margin-top:12px"><small>${currentEntry.jobAddress || ""}</small></p>
+                   <p style="margin-top:12px">Your manager has been notified. If this is an error, call <strong>928-450-5733</strong>.</p>`,
+            confirmButtonText: "OK",
+            confirmButtonColor: "#d32f2f",
+          });
+          return; // Hard block — do not clock out
         }
-      } catch (e) {
-        console.warn("📍 Clock-out GPS unavailable:", e.message);
+      } else {
+        gpsOutData = {
+          gpsOutLat: latitude,
+          gpsOutLng: longitude,
+          gpsOutAccuracyMeters: Math.round(accuracy),
+          gpsOutAccuracyFeet: Math.round(accuracy * 3.28084),
+        };
       }
+
+      console.log("📍 Clock-out GPS verified on site:", gpsOutData);
+      // ── END GPS GATE ──────────────────────────────────────────────────────
 
       await updateDoc(doc(db, "job_time_entries", currentEntry.id), {
         clockOut: now,

@@ -90,6 +90,19 @@ const ContractEditor = () => {
           }
           if (data.contractorSignature) {
             setContractorSigData(data.contractorSignature);
+          } else if (data.type === 'maintenance_agreement') {
+            // Auto-apply Darren's signature on maintenance agreements — he's the offeror
+            const canvas = document.createElement('canvas');
+            canvas.width = 400; canvas.height = 100;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = 'white';
+            ctx.fillRect(0, 0, 400, 100);
+            ctx.font = '32px "Brush Script MT", cursive';
+            ctx.fillStyle = 'black';
+            ctx.fillText('Darren Bennett', 50, 60);
+            const autoSig = canvas.toDataURL('image/png');
+            setContractorSigData(autoSig);
+            setContractorSignedAt(new Date().toLocaleString());
           }
           if (data.clientSignedAt) {
             setClientSignedAt(data.clientSignedAt);

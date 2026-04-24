@@ -35,6 +35,10 @@ import {
   Chip,
   TextField,
   InputAdornment,
+  Card,
+  CardContent,
+  Alert,
+  CircularProgress,
 } from "@mui/material";
 import MenuIcon from "@mui/icons-material/Menu";
 import CloseIcon from "@mui/icons-material/Close";
@@ -43,6 +47,7 @@ import SortIcon from "@mui/icons-material/Sort";
 import SearchIcon from "@mui/icons-material/Search";
 import DownloadIcon from "@mui/icons-material/Download";
 import DescriptionIcon from "@mui/icons-material/Description";
+import LockIcon from "@mui/icons-material/Lock";
 import Swal from "sweetalert2";
 import { db } from "./firebase";
 import {
@@ -517,6 +522,68 @@ function BidsList() {
 }
 
 // ------------------------- HOME REDIRECT COMPONENT -------------------------
+// ── ForcePasswordChange ───────────────────────────────────────────────────────
+// Shown when mustChangePassword === true. Clears the flag then proceeds to NDA.
+function ForcePasswordChange() {
+  const { user } = useAuth();
+  const navigate = useNavigate();
+  const [newPassword, setNewPassword]     = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [loading, setLoading]             = useState(false);
+  const [error, setError]                 = useState('');
+
+  const handleSubmit = async () => {
+    setError('');
+    if (newPassword.length < 6) { setError('Password must be at least 6 characters.'); return; }
+    if (newPassword !== confirmPassword) { setError('Passwords do not match.'); return; }
+    try {
+      setLoading(true);
+      const { updatePassword } = await import('firebase/auth');
+      await updatePassword(user, newPassword);
+      // Clear the flag in Firestore
+      const { doc, updateDoc } = await import('firebase/firestore');
+      await updateDoc(doc(db, 'users', user.uid), { mustChangePassword: false });
+      // Navigate to NDA (firstLogin gate will pick it up)
+      navigate('/nda-signing');
+    } catch (err) {
+      if (err.code === 'auth/requires-recent-login') {
+        setError('Session expired. Please log out and log back in, then try again.');
+      } else {
+        setError(err.message);
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <Box sx={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', bgcolor: '#f5f5f5' }}>
+      <Card sx={{ maxWidth: 420, width: '100%', mx: 2 }}>
+        <CardContent sx={{ p: 4 }}>
+          <Box sx={{ textAlign: 'center', mb: 3 }}>
+            <LockIcon sx={{ fontSize: 48, color: 'warning.main', mb: 1 }} />
+            <Typography variant="h5" fontWeight="bold">Set Your Password</Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+              Your account was created with a temporary password. Please set a new one before continuing.
+            </Typography>
+          </Box>
+          {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
+          <TextField
+            fullWidth label="New Password" type="password" sx={{ mb: 2 }}
+            value={newPassword} onChange={e => setNewPassword(e.target.value)}
+            helperText="Minimum 6 characters" />
+          <TextField
+            fullWidth label="Confirm New Password" type="password" sx={{ mb: 3 }}
+            value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} />
+          <Button fullWidth variant="contained" size="large" onClick={handleSubmit} disabled={loading}>
+            {loading ? <CircularProgress size={24} color="inherit" /> : 'Set Password & Continue'}
+          </Button>
+        </CardContent>
+      </Card>
+    </Box>
+  );
+}
+
 function HomeRedirect() {
   const { userRole } = useAuth();
   const navigate = useNavigate();
@@ -609,7 +676,13 @@ function AppContent() {
 
     const currentPath = location.pathname;
 
-    if (currentPath === '/nda-signing' || currentPath.startsWith('/public/')) {
+    if (currentPath === '/nda-signing' || currentPath === '/change-password' || currentPath.startsWith('/public/')) {
+      return;
+    }
+
+    // Must change password BEFORE NDA
+    if (userData.mustChangePassword === true) {
+      navigate('/change-password');
       return;
     }
 
@@ -882,6 +955,7 @@ function AppContent() {
       )}
 
       <Routes>
+        <Route path="/change-password" element={<ForcePasswordChange />} />
         <Route path="/time-clock" element={<TimeClock />} />
         <Route path="/my-hours" element={<MyHours />} />
         <Route path="/profile" element={<UserProfile />} />
@@ -941,6 +1015,7 @@ function AppContent() {
         <Route path="/tax-report" element={<TaxReport />} />
         <Route path="/job-expenses/:id" element={<JobExpenses />} />
         <Route path="/public/sign/:contractId" element={<ContractSigningPage />} />
+        <Route path="/public/sign-bid/:bidId" element={<BidSigningPage />} />
         <Route path="/sign-bid/:bidId" element={<BidSigningPage />} />
         <Route path="/public/pay/:invoiceId" element={<PaymentPortal />} />
         <Route path="/public/invite/:token" element={<InviteSignup />} />

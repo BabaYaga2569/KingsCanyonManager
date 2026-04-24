@@ -35,6 +35,7 @@ import SaveIcon from "@mui/icons-material/Save";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import PersonAddIcon from "@mui/icons-material/PersonAdd";
 import moment from "moment";
+import { generateSecureToken } from './utils/tokenUtils';
 import { 
   createMaintenanceSchedules, 
   deleteMaintenanceSchedules,
@@ -52,8 +53,8 @@ export default function MaintenanceEditor() {
     frequency: "biweekly",
     monthlyRate: "",
     servicesIncluded: "Routine maintenance including trimming, hedging, mowing, checking timers. Additional items like rock installation, landscape work, or irrigation repairs will be billed separately.",
-    startDate: moment().format("YYYY-MM-DD"),
-    status: "active",
+    startDate: "",
+    status: "pending_signature",
     notes: "",
     autoSchedule: true, // NEW: Enable auto-scheduling by default
     monthsAhead: 3, // NEW: How many months ahead to schedule
@@ -184,8 +185,7 @@ export default function MaintenanceEditor() {
     }
 
     if (!contract.startDate) {
-      Swal.fire("Error", "Please select a start date", "error");
-      return;
+      // startDate is optional — TBD until contract is signed, that's fine
     }
 
     setSaving(true);
@@ -202,62 +202,81 @@ export default function MaintenanceEditor() {
         contractData.createdAt = serverTimestamp();
         contractData.lastVisitDate = null;
         contractData.totalVisits = 0;
+        contractData.status = 'pending_signature'; // Always start pending
         
         const docRef = await addDoc(collection(db, "maintenance_contracts"), contractData);
         contractId = docRef.id;
-        
-        // Auto-create schedules if enabled
-        if (contract.autoSchedule && contract.status === "active") {
-          console.log("🔄 Creating maintenance schedules...");
-          const schedulesCreated = await createMaintenanceSchedules(
-            { ...contractData, id: contractId }, 
-            contract.monthsAhead || 3
-          );
-          
-          Swal.fire({
-            title: "Contract Created!",
-            html: `Maintenance contract created successfully<br><strong>${schedulesCreated} visits scheduled</strong>`,
-            icon: "success",
-          });
-        } else {
-          Swal.fire({
-            title: "Contract Created!",
-            text: "Maintenance contract created successfully",
-            icon: "success",
-          });
-        }
+
+        // ── Create signing contract in contracts collection ──────────────────
+        // This is what shows up in the Contracts dashboard for sending to client
+        const signingToken = generateSecureToken();
+        const freq = contract.frequency || 'biweekly';
+        const freqLabel = freq.charAt(0).toUpperCase() + freq.slice(1);
+        await addDoc(collection(db, "contracts"), {
+          maintenanceContractId: contractId,
+          clientName: contract.customerName || '',
+          customerName: contract.customerName || '',
+          customerId: contract.customerId || null,
+          amount: parseFloat(contract.monthlyRate || 0),
+          frequency: freq,
+          description: contract.servicesIncluded || 'Standard maintenance service',
+          materials: '',
+          notes: `Monthly rate: $${contract.monthlyRate}/mo`,
+          status: 'Pending',
+          type: 'maintenance_agreement',
+          signingToken,
+          createdAt: new Date().toISOString(),
+          source: 'maintenance_contract',
+        });
+
+        Swal.fire({
+          title: "Maintenance Contract Created!",
+          html: `
+            <p>Contract for <strong>${contract.customerName}</strong> is ready.</p>
+            <p style="margin-top:12px; color:#1565c0;">
+              📄 Go to the <strong>Contracts</strong> page to send the signing link to your client.
+            </p>
+            <p style="margin-top:8px; color:#555; font-size:0.9em;">
+              Visits will be scheduled automatically once both parties sign.
+            </p>
+          `,
+          icon: "success",
+          confirmButtonText: "Go to Contracts",
+          showCancelButton: true,
+          cancelButtonText: "Stay Here",
+        }).then((result) => {
+          if (result.isConfirmed) navigate("/contracts");
+          else navigate("/maintenance");
+        });
+        return; // skip navigate below
       } else {
         const previousStatus = contract.status;
         
         await updateDoc(doc(db, "maintenance_contracts", id), contractData);
         
-        // Handle schedule updates based on status changes
-        if (contract.status === "active" && contract.autoSchedule) {
-          // If activated, create/regenerate schedules
-          console.log("🔄 Creating/updating maintenance schedules...");
+        // Only create schedules when transitioning TO active from pending/paused
+        if (contract.status === "active" && previousStatus !== "active" && contract.autoSchedule) {
+          console.log("🔄 Creating maintenance schedules after activation...");
           const schedulesCreated = await createMaintenanceSchedules(
             { ...contractData, id: contractId }, 
             contract.monthsAhead || 3
           );
-          
           Swal.fire({
-            title: "Contract Updated!",
-            html: `Changes saved successfully<br><strong>${schedulesCreated} new visits scheduled</strong>`,
+            title: "Contract Activated!",
+            html: `Maintenance contract is now active.<br><strong>${schedulesCreated} visits scheduled on your calendar.</strong>`,
             icon: "success",
           });
         } else if (contract.status === "paused" || contract.status === "cancelled") {
-          // Update schedule status
           await updateMaintenanceScheduleStatus(contractId, contract.status);
-          
           Swal.fire({
             title: "Contract Updated!",
-            text: `Contract ${contract.status} - future visits ${contract.status}`,
+            text: `Contract ${contract.status} — future visits updated.`,
             icon: "success",
           });
         } else {
           Swal.fire({
             title: "Contract Updated!",
-            text: "Changes saved successfully",
+            text: "Changes saved successfully.",
             icon: "success",
           });
         }
@@ -371,17 +390,16 @@ export default function MaintenanceEditor() {
             helperText="Describe what's included in the maintenance agreement"
           />
 
-          {/* Start Date */}
+          {/* Proposed Start Date */}
           <TextField
-            label="Start Date"
+            label="Proposed Start Date (Optional)"
             name="startDate"
             type="date"
             value={contract.startDate}
             onChange={handleChange}
             fullWidth
-            required
             InputLabelProps={{ shrink: true }}
-            helperText="When the maintenance agreement begins"
+            helperText="Optional — leave blank if not yet confirmed. Actual start date will be agreed upon after client signs the contract."
           />
 
           {/* Status */}
@@ -393,9 +411,10 @@ export default function MaintenanceEditor() {
               label="Status"
               onChange={handleChange}
             >
-              <MenuItem value="active">Active - Scheduled visits</MenuItem>
-              <MenuItem value="paused">Paused - Temporarily stopped</MenuItem>
-              <MenuItem value="cancelled">Cancelled - Contract ended</MenuItem>
+              <MenuItem value="pending_signature">⏳ Awaiting Signature</MenuItem>
+              <MenuItem value="active">✅ Active - Scheduled visits</MenuItem>
+              <MenuItem value="paused">⏸ Paused - Temporarily stopped</MenuItem>
+              <MenuItem value="cancelled">❌ Cancelled - Contract ended</MenuItem>
             </Select>
           </FormControl>
 

@@ -21,6 +21,10 @@
   },
   "functions": {
     "source": "functions",
-    "runtime": "nodejs20"
+    "runtime": "nodejs20",
+    "secretEnvironmentVariables": [
+      {"key": "ANTHROPIC_API_KEY"},
+      {"key": "RESEND_API_KEY"}
+    ]
   }
 }

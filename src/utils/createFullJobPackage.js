@@ -7,6 +7,7 @@ import { generateSecureToken } from './tokenUtils';
  * Creates linked Contract, Invoice, and Job Folder from a Bid
  * WITH DUPLICATE PREVENTION - checks if customer already has active contract
  * Phase 2C: Added skipDuplicateCheck for auto-creation from signing page
+ * Phase 2D: Removed hard customerId block — warns and continues without it
  * @param {object} bid - The bid object from Firestore
  * @param {boolean} skipDuplicateCheck - Skip duplicate check when called from signing page
  * @returns {Promise<object>} - { contractId, invoiceId, jobId } or null if cancelled
@@ -24,7 +25,6 @@ export async function createFullJobPackage(bid, skipDuplicateCheck = false) {
       const existingContracts = await getDocs(contractsQuery);
       
       if (!existingContracts.empty) {
-        // Customer already has contract(s)
         const existingContract = existingContracts.docs[0];
         const contractData = existingContract.data();
         
@@ -52,14 +52,11 @@ export async function createFullJobPackage(bid, skipDuplicateCheck = false) {
         });
         
         if (result.isConfirmed) {
-          // User wants to open existing contract
           window.location.assign(`/contract/${existingContract.id}`);
-          return null; // Don't create new package
+          return null;
         } else if (result.isDenied) {
-          // User wants to create new package anyway (for multiple projects)
           // Continue with creation below
         } else {
-          // User cancelled
           return null;
         }
       }
@@ -70,18 +67,13 @@ export async function createFullJobPackage(bid, skipDuplicateCheck = false) {
   }
   
   // 📦 CREATE NEW JOB PACKAGE
-  // Phase 2C Fix 1: customerId now included on EVERY record
   const jobId = crypto.randomUUID();
   const customerId = bid.customerId || null;
 
+  // ⚠️ Phase 2D: Soft warning only — missing customerId means no address auto-fill
+  // but we still create the full package so nothing is lost.
   if (!customerId) {
-    console.error("WARNING: Bid has no customerId!", bid);
-    await Swal.fire(
-      "Missing Customer Link",
-      "This bid is not linked to a customer. Cannot create job package without a customer.",
-      "error"
-    );
-    return null;
+    console.warn("WARNING: Bid has no customerId — job package will be created without customer link.", bid);
   }
 
   const base = {
